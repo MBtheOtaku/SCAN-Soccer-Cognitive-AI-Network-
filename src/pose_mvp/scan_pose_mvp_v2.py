@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -19,8 +20,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
-import mediapipe as mp
 import numpy as np
+
+# Load MediaPipe dynamically so static analysis does not require its optional
+# package metadata to be installed in the editor's Python environment.
+mp = importlib.import_module("mediapipe")
 
 LEFT_SHOULDER, RIGHT_SHOULDER = 11, 12
 LEFT_HIP, RIGHT_HIP = 23, 24
