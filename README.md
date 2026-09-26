@@ -1,50 +1,48 @@
-# SCAN — Soccer Cognitive AI Network
+# SCAN Pose MVP v2 — first real shooting clip
 
-SCAN is an AI-driven adaptive soccer training coach that decides *what* to say,
-*when* to say it, and *how much* detail to give a player during solo shooting
-and first-touch drills — based on their real-time technical and cognitive
-state, instead of giving constant commentary.
+This version is tuned for the first SCAN test clip: a fixed 1280x720 side-angle shooting video.
+It crops the pose model to the player region, draws the skeleton back onto the original frame,
+computes simple pose features, estimates the probable striking leg/moment using ankle motion
+relative to the hips, and writes a JSON summary that can later feed `RepFeatures`.
 
-## Why
-
-Constant feedback overloads a player's germane cognitive load and drowns out
-the signal that actually matters. SCAN treats coaching as a decision problem:
-withhold feedback unless a hazard, a repeated error pattern, or a natural rep
-boundary justifies breaking silence.
-
-## Architecture
-
-1. **Feature extraction** (`src/feature_extraction.py`) — CV pipeline turns
-   raw drill footage into `RepFeatures` per repetition.
-2. **Controller** (`src/controller.py`) — priority-ordered decision loop:
-   hazard override → protect germane load → repeated-error summary →
-   end-of-rep cue → default silence.
-3. **LLM feedback** (`src/llm_feedback.py`) — converts a `Decision` into a
-   natural-language (or spoken) coaching cue.
-4. **Player state** (`src/player_state.py`) — tracks rep history, error
-   counts, and intervention history across a session.
-
-## Status
-
-- [x] Core decision loop (`controller.py`) with unit tests
-- [x] Player state tracking
-- [ ] Real CV feature extraction (Phase 1)
-- [ ] LLM-generated natural-language cues (Phase 2)
-- [ ] Within-subjects evaluation study vs. always-on baseline (Phase 3)
-- [ ] Demo video + packaging (Phase 4)
-
-**Current result:** 55% reduction in feedback volume vs. an always-on
-baseline, with zero missed hazard-type errors (pilot test).
-
-## Setup
+## Install
 
 ```bash
-pip install -r requirements.txt
-pytest tests/
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+# source .venv/bin/activate
+
+python -m pip install mediapipe opencv-python numpy
 ```
 
-## Roadmap
+Current MediaPipe releases support Windows x86-64. If your Python environment gives package
+compatibility trouble, use Python 3.12 for the least-friction setup.
 
-See project docs for the full phase plan (real footage → controller →
-LLM cues → evaluation study → demo packaging). AR/VR (Unity) integration is
-scoped as future work, not a build target for this year.
+Download Google's Pose Landmarker model and place it beside the script as:
+
+`pose_landmarker_full.task`
+
+## Run this specific clip
+
+```bash
+python scan_pose_mvp_v2.py IMG_5702.mov --roi 540,280,1180,650
+```
+
+Outputs:
+- `scan_annotated_v2.mp4` — skeleton + metrics overlay
+- `scan_pose_metrics_v2.csv` — per-frame pose measurements
+- `scan_shot_summary.json` — estimated strike event + one prototype cue
+
+## Why the ROI?
+
+The player is relatively small in the full 1280x720 frame. The fixed ROI covers the full run-up,
+strike, and early follow-through while giving the pose estimator many more useful pixels.
+The ROI is only for this first fixed-camera test. Later we should replace it with player tracking.
+
+## Important interpretation
+
+The strike detector is an engineering heuristic: it picks the ankle with the highest motion
+relative to the hip midpoint. The feedback is also provisional. This is enough to validate the
+pipeline, but it should not be described as validated soccer biomechanics.
