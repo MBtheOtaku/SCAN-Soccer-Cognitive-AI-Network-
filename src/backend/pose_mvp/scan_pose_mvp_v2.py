@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+import subprocess
 
 # Load MediaPipe dynamically so static analysis does not require its optional
 # package metadata to be installed in the editor's Python environment.
@@ -318,9 +319,20 @@ def analyze(video: Path, model: Path, output: Path, csv_path: Path, json_path: P
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     roi = parse_roi(roi_text, width, height)
 
-    writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    temp_output = output.with_name(
+    f"{output.stem}_temp.mp4"
+    )
+
+    writer = cv2.VideoWriter(
+        str(temp_output),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+
+
     if not writer.isOpened():
-        raise RuntimeError(f"Could not create {output}")
+        raise RuntimeError(f"Could not create {temp_output}")
 
     BaseOptions = mp.tasks.BaseOptions
     PoseLandmarker = mp.tasks.vision.PoseLandmarker
@@ -361,6 +373,23 @@ def analyze(video: Path, model: Path, output: Path, csv_path: Path, json_path: P
     finally:
         cap.release()
         writer.release()
+
+    # Convert OpenCV's mp4v output into browser-compatible H.264.
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i", str(temp_output),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-an",
+            str(output),
+        ],
+        check=True,
+    )
+
+    temp_output.unlink(missing_ok=True)
 
     save_csv(metrics, csv_path)
     summary = build_summary(metrics, frame_idx, fps)
