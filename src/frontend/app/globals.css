@@ -1036,3 +1036,34 @@ body {
   }
 
 }
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.voice-toggle {
+  padding: 7px 10px;
+
+  cursor: pointer;
+
+  color: #728178;
+  background: transparent;
+
+  border: 1px solid rgba(119, 255, 146, 0.12);
+  border-radius: 4px;
+
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+.voice-toggle:hover {
+  color: var(--green);
+  border-color: rgba(119, 255, 146, 0.4);
+}

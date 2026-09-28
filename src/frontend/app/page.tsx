@@ -1,6 +1,11 @@
 "use client";
 
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
+import {
+  initializeSpeech,
+  speak,
+  stopSpeaking,
+} from "../lib/speech";
 
 const API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_ROI = "540,280,1180,650";
@@ -46,15 +51,45 @@ export default function Home() {
   const [activeStage, setActiveStage] = useState(0);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasWelcomed = useRef(false);
 
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    initializeSpeech();
+
+    return () => {
+      stopSpeaking();
+    };
+  }, []);
+
+  const handleFirstInteraction = () => {
+    if (!voiceEnabled || hasWelcomed.current) {
+      return;
+    }
+
+    hasWelcomed.current = true;
+
+    speak(
+      "SCAN online. Ready for training analysis."
+    );
+  };
+
+  const handleFileChange = (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
     const file = event.target.files?.[0] ?? null;
 
     setSelectedFile(file);
     setResult(null);
     setError(null);
+
+    if (file && voiceEnabled) {
+      speak(
+        "Video acquired. Ready to calibrate."
+      );
+    }
   };
 
   const openFilePicker = () => {
@@ -70,6 +105,12 @@ export default function Home() {
     setResult(null);
     setError(null);
     setActiveStage(0);
+
+    if (voiceEnabled) {
+      speak(
+        "Calibration complete. Beginning session analysis."
+      );
+    }
 
     /*
       Temporary UI progression.
@@ -111,7 +152,21 @@ export default function Home() {
         window.setTimeout(resolve, 600)
       );
 
-      setResult(data as AnalysisResponse);
+      const analysisResult = data as AnalysisResponse;
+
+      setResult(analysisResult);
+
+      const spokenFeedback =
+        analysisResult.summary.prototype_feedback.replace(
+          /^Prototype cue:\s*/i,
+          ""
+        );
+
+      if (voiceEnabled) {
+        speak(
+          `Analysis complete. ${spokenFeedback}`
+        );
+      }
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message);
@@ -136,7 +191,7 @@ export default function Home() {
   };
 
   return (
-    <main className="scan-page">
+    <main className="scan-page" onPointerDown={handleFirstInteraction}>
       {/* Background pitch */}
       <div className="pitch-background" aria-hidden="true">
         <div className="pitch-half-line" />
@@ -159,10 +214,32 @@ export default function Home() {
           </div>
         </div>
 
+        <div className="header-controls">
+        <button
+          className="voice-toggle"
+          onClick={(event) => {
+            event.stopPropagation();
+
+            setVoiceEnabled((current) => {
+              const next = !current;
+
+              if (!next) {
+                stopSpeaking();
+              }
+
+              return next;
+            });
+          }}
+        >
+          {voiceEnabled ? "◉ VOICE ON" : "○ VOICE OFF"}
+        </button>
+
+        
         <div className="system-status">
           <span className="status-dot" />
           SYSTEM ONLINE
         </div>
+      </div>
       </header>
 
       {/* PROCESSING SCREEN */}
