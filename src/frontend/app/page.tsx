@@ -2,6 +2,7 @@
 
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import {
+  getStartupGreeting,
   initializeSpeech,
   speak,
   stopSpeaking,
@@ -70,9 +71,7 @@ export default function Home() {
 
     hasWelcomed.current = true;
 
-    speak(
-      "SCAN online. Ready for training analysis."
-    );
+    speak(getStartupGreeting());
   };
 
   const handleFileChange = (
