@@ -98,10 +98,18 @@ def parse_roi(text: Optional[str], width: int, height: int) -> ROI:
         x1, y1, x2, y2 = [int(v.strip()) for v in text.split(",")]
     except Exception as exc:
         raise ValueError("ROI must be x1,y1,x2,y2") from exc
-    x1, x2 = sorted((max(0, x1), min(width, x2)))
-    y1, y2 = sorted((max(0, y1), min(height, y2)))
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+
+    x1 = max(0, min(width, x1))
+    x2 = max(0, min(width, x2))
+
+    y1 = max(0, min(height, y1))
+    y2 = max(0, min(height, y2))
+
     if x2 - x1 < 50 or y2 - y1 < 50:
         raise ValueError("ROI is too small")
+
     return ROI(x1, y1, x2, y2)
 
 
@@ -222,8 +230,19 @@ def estimate_strike(metrics: Sequence[FrameMetrics], fps: float) -> Tuple[Option
 
 
 def prototype_feedback(metrics: Sequence[FrameMetrics], strike_idx: Optional[int], striking_leg: Optional[str]) -> Tuple[Optional[str], str]:
-    if strike_idx is None or striking_leg is None or not metrics:
-        return None, "Pose was tracked, but a strike event could not be estimated reliably."
+    if not metrics:
+        return (
+        None,
+        "A reliable player pose could not be established "
+        "for this video."
+        )
+
+    if strike_idx is None or striking_leg is None:
+        return (
+            None,
+            "Pose was tracked, but a strike event "
+            "could not be estimated reliably."
+        )
 
     # Use a small strike window instead of medians across the entire approach/follow-through.
     lo, hi = max(0, strike_idx - 3), min(len(metrics), strike_idx + 4)
@@ -309,18 +328,306 @@ def save_csv(metrics: Sequence[FrameMetrics], path: Path) -> None:
             w.writerow(asdict(m))
 
 
-def analyze(video: Path, model: Path, output: Path, csv_path: Path, json_path: Path,
-            roi_text: Optional[str]) -> ShotSummary:
+def detect_player_roi(
+    video_path: Path,
+    model_path: Path,
+    samples: int = 20,
+    padding: float = 0.35,
+) -> ROI:
+    """
+    Estimate one fixed player ROI by independently sampling frames
+    across the video.
+
+    This calibration pass uses IMAGE mode because sampled frames are
+    not processed sequentially.
+    """
+
+    cap = cv2.VideoCapture(str(video_path))
+
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open video: {video_path}"
+        )
+
+    frame_count = int(
+        cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    )
+    width = int(
+        cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    )
+    height = int(
+        cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    )
+
+    BaseOptions = mp.tasks.BaseOptions
+    PoseLandmarker = mp.tasks.vision.PoseLandmarker
+    PoseLandmarkerOptions = (
+        mp.tasks.vision.PoseLandmarkerOptions
+    )
+    RunningMode = mp.tasks.vision.RunningMode
+
+    options = PoseLandmarkerOptions(
+        base_options=BaseOptions(
+            model_asset_path=str(model_path)
+        ),
+        running_mode=RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.25,
+        min_pose_presence_confidence=0.25,
+        output_segmentation_masks=False,
+    )
+
+    boxes = []
+
+    sample_indices = np.linspace(
+        0,
+        max(frame_count - 1, 0),
+        min(samples, frame_count),
+        dtype=int,
+    )
+
+    core_landmarks = [
+        LEFT_SHOULDER,
+        RIGHT_SHOULDER,
+        LEFT_HIP,
+        RIGHT_HIP,
+        LEFT_KNEE,
+        RIGHT_KNEE,
+        LEFT_ANKLE,
+        RIGHT_ANKLE,
+    ]
+
+    try:
+        with PoseLandmarker.create_from_options(
+            options
+        ) as landmarker:
+
+            for frame_index in sample_indices:
+                cap.set(
+                    cv2.CAP_PROP_POS_FRAMES,
+                    int(frame_index),
+                )
+
+                ok, frame = cap.read()
+
+                if not ok:
+                    continue
+
+                rgb = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_BGR2RGB,
+                )
+
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=rgb,
+                )
+
+                # IMAGE mode: each sampled frame is independent.
+                result = landmarker.detect(mp_image)
+
+                if not result.pose_landmarks:
+                    continue
+
+                landmarks = result.pose_landmarks[0]
+
+                # Reject weak partial detections.
+                reliable_core = [
+                    idx
+                    for idx in core_landmarks
+                    if visibility(landmarks, idx) >= 0.25
+                ]
+
+                if len(reliable_core) < 6:
+                    continue
+
+                visible = [
+                    lm
+                    for lm in landmarks
+                    if getattr(
+                        lm,
+                        "visibility",
+                        1.0,
+                    ) >= 0.25
+                ]
+
+                if not visible:
+                    continue
+
+                xs = [
+                    max(
+                        0.0,
+                        min(width, lm.x * width),
+                    )
+                    for lm in visible
+                ]
+
+                ys = [
+                    max(
+                        0.0,
+                        min(height, lm.y * height),
+                    )
+                    for lm in visible
+                ]
+
+                boxes.append(
+                    (
+                        min(xs),
+                        min(ys),
+                        max(xs),
+                        max(ys),
+                    )
+                )
+
+    finally:
+        cap.release()
+
+    if not boxes:
+        raise RuntimeError(
+            "Automatic player calibration failed: "
+            "no reliable full-body pose detected."
+        )
+
+    # Movement envelope across the entire sampled rep.
+    box_array = np.array(boxes, dtype=float)
+
+    x1 = np.percentile(box_array[:, 0], 10)
+    y1 = np.percentile(box_array[:, 1], 10)
+
+    x2 = np.percentile(box_array[:, 2], 90)
+    y2 = np.percentile(box_array[:, 3], 90)
+
+    box_width = x2 - x1
+    box_height = y2 - y1
+
+    x_padding = max(
+        box_width * padding,
+        width * 0.05,
+    )
+
+    y_padding = max(
+        box_height * padding,
+        height * 0.05,
+    )
+
+    x1 -= x_padding
+    x2 += x_padding
+    y1 -= y_padding
+    y2 += y_padding
+
+    # -----------------------------------------------------
+    # Minimum crop size
+    # Prevent tiny partial-body ROIs.
+    # -----------------------------------------------------
+
+    minimum_width = width * 0.35
+    minimum_height = height * 0.50
+
+    current_width = x2 - x1
+    current_height = y2 - y1
+
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+
+    if current_width < minimum_width:
+        half_width = minimum_width / 2
+        x1 = center_x - half_width
+        x2 = center_x + half_width
+
+    if current_height < minimum_height:
+        half_height = minimum_height / 2
+        y1 = center_y - half_height
+        y2 = center_y + half_height
+
+    # Clamp final ROI to video dimensions.
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(width, int(x2))
+    y2 = min(height, int(y2))
+
+    if x2 - x1 < 50 or y2 - y1 < 50:
+        raise RuntimeError(
+            "Automatic player ROI was too small."
+        )
+
+    return ROI(
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
+    )
+
+def analyze(
+    video: Path,
+    model: Path,
+    output: Path,
+    csv_path: Path,
+    json_path: Path,
+    roi_text: Optional[str],
+) -> ShotSummary:
+
     cap = cv2.VideoCapture(str(video))
+
     if not cap.isOpened():
         raise RuntimeError(f"Could not open {video}")
+
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    roi = parse_roi(roi_text, width, height)
+
+    # ---------------------------------------------------------
+    # ROI calibration
+    # ---------------------------------------------------------
+
+    if roi_text:
+        # Manual ROI still supported for debugging/testing.
+        roi = parse_roi(
+            roi_text,
+            width,
+            height,
+        )
+
+        print(
+            f"Using manual ROI: "
+            f"{roi.x1},{roi.y1},{roi.x2},{roi.y2}"
+        )
+
+    else:
+        print(
+            "No ROI provided. "
+            "Running automatic player calibration..."
+        )
+
+        try:
+            roi = detect_player_roi(
+                video,
+                model,
+            )
+
+            print(
+                f"Automatic ROI: "
+                f"{roi.x1},{roi.y1},{roi.x2},{roi.y2}"
+            )
+
+        except RuntimeError as exc:
+            print(
+                f"Automatic calibration failed ({exc}). "
+                "Falling back to full frame."
+            )
+
+            roi = ROI(
+                x1=0,
+                y1=0,
+                x2=width,
+                y2=height,
+            )
+
+    # ---------------------------------------------------------
+    # Temporary OpenCV output
+    # ---------------------------------------------------------
 
     temp_output = output.with_name(
-    f"{output.stem}_temp.mp4"
+        f"{output.stem}_temp.mp4"
     )
 
     writer = cv2.VideoWriter(
@@ -330,16 +637,27 @@ def analyze(video: Path, model: Path, output: Path, csv_path: Path, json_path: P
         (width, height),
     )
 
-
     if not writer.isOpened():
-        raise RuntimeError(f"Could not create {temp_output}")
+        cap.release()
+        raise RuntimeError(
+            f"Could not create {temp_output}"
+        )
+
+    # ---------------------------------------------------------
+    # MediaPipe setup
+    # ---------------------------------------------------------
 
     BaseOptions = mp.tasks.BaseOptions
     PoseLandmarker = mp.tasks.vision.PoseLandmarker
-    PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+    PoseLandmarkerOptions = (
+        mp.tasks.vision.PoseLandmarkerOptions
+    )
     RunningMode = mp.tasks.vision.RunningMode
+
     opts = PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=str(model)),
+        base_options=BaseOptions(
+            model_asset_path=str(model)
+        ),
         running_mode=RunningMode.VIDEO,
         num_poses=1,
         min_pose_detection_confidence=0.35,
@@ -350,50 +668,129 @@ def analyze(video: Path, model: Path, output: Path, csv_path: Path, json_path: P
 
     metrics: List[FrameMetrics] = []
     frame_idx = 0
+
+    # ---------------------------------------------------------
+    # Frame-by-frame pose analysis
+    # ---------------------------------------------------------
+
     try:
-        with PoseLandmarker.create_from_options(opts) as landmarker:
+        with PoseLandmarker.create_from_options(
+            opts
+        ) as landmarker:
+
             while True:
                 ok, frame = cap.read()
+
                 if not ok:
                     break
-                crop = frame[roi.y1:roi.y2, roi.x1:roi.x2]
-                rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                result = landmarker.detect_for_video(mp_image, int(round(frame_idx / fps * 1000)))
+
+                crop = frame[
+                    roi.y1:roi.y2,
+                    roi.x1:roi.x2,
+                ]
+
+                rgb = cv2.cvtColor(
+                    crop,
+                    cv2.COLOR_BGR2RGB,
+                )
+
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=rgb,
+                )
+
+                timestamp_ms = int(
+                    round(frame_idx / fps * 1000)
+                )
+
+                result = landmarker.detect_for_video(
+                    mp_image,
+                    timestamp_ms,
+                )
+
                 fm = None
+
                 if result.pose_landmarks:
                     lms = result.pose_landmarks[0]
-                    fm = compute_metrics(lms, roi, frame_idx, frame_idx / fps)
-                    draw_pose(frame, lms, roi)
+
+                    fm = compute_metrics(
+                        lms,
+                        roi,
+                        frame_idx,
+                        frame_idx / fps,
+                    )
+
+                    draw_pose(
+                        frame,
+                        lms,
+                        roi,
+                    )
+
                     if fm is not None:
                         metrics.append(fm)
-                draw_hud(frame, fm, roi)
+
+                draw_hud(
+                    frame,
+                    fm,
+                    roi,
+                )
+
                 writer.write(frame)
+
                 frame_idx += 1
+
     finally:
         cap.release()
         writer.release()
 
-    # Convert OpenCV's mp4v output into browser-compatible H.264.
+    # ---------------------------------------------------------
+    # Convert OpenCV output to browser-compatible H.264
+    # ---------------------------------------------------------
+
     subprocess.run(
         [
             "ffmpeg",
             "-y",
-            "-i", str(temp_output),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
+            "-i",
+            str(temp_output),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
             "-an",
             str(output),
         ],
         check=True,
     )
 
+    # Remove temporary mp4v file after conversion.
     temp_output.unlink(missing_ok=True)
 
-    save_csv(metrics, csv_path)
-    summary = build_summary(metrics, frame_idx, fps)
-    json_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
+    # ---------------------------------------------------------
+    # Save analysis artifacts
+    # ---------------------------------------------------------
+
+    save_csv(
+        metrics,
+        csv_path,
+    )
+
+    summary = build_summary(
+        metrics,
+        frame_idx,
+        fps,
+    )
+
+    json_path.write_text(
+        json.dumps(
+            asdict(summary),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     return summary
 
 
@@ -404,7 +801,7 @@ def main() -> None:
     p.add_argument("--output", type=Path, default=Path("scan_annotated_v2.mp4"))
     p.add_argument("--csv", type=Path, default=Path("scan_pose_metrics_v2.csv"))
     p.add_argument("--json", type=Path, default=Path("scan_shot_summary.json"))
-    p.add_argument("--roi", type=str, default=None, help="x1,y1,x2,y2; omit for full frame")
+    p.add_argument("--roi", type=str, default=None, help="x1,y1,x2,y2; omit for automatic player calibration",)
     a = p.parse_args()
     if not a.video.exists():
         raise FileNotFoundError(a.video)

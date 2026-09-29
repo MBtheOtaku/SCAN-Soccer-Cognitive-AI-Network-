@@ -1,0 +1,1 @@
+frame_idx,timestamp_s,pose_confidence,left_knee_angle_deg,right_knee_angle_deg,torso_lean_deg,stance_ratio,shoulder_width_px,hip_mid_x,hip_mid_y,left_ankle_x,left_ankle_y,right_ankle_x,right_ankle_y

@@ -1,0 +1,14 @@
+{
+  "total_frames": 100,
+  "valid_pose_frames": 0,
+  "pose_coverage": 0.0,
+  "probable_striking_leg": null,
+  "probable_strike_frame": null,
+  "probable_strike_time_s": null,
+  "strike_peak_relative_ankle_speed_px_s": null,
+  "strike_torso_lean_deg": null,
+  "strike_left_knee_angle_deg": null,
+  "strike_right_knee_angle_deg": null,
+  "prototype_feedback_code": null,
+  "prototype_feedback": "Pose was tracked, but a strike event could not be estimated reliably."
+}

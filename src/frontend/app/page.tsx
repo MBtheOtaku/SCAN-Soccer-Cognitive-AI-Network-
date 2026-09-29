@@ -8,7 +8,6 @@ import {
 } from "../lib/speech";
 
 const API_BASE = "http://127.0.0.1:8000";
-const DEFAULT_ROI = "540,280,1180,650";
 
 type ScanSummary = {
   total_frames: number;
@@ -21,7 +20,7 @@ type ScanSummary = {
   strike_torso_lean_deg: number | null;
   strike_left_knee_angle_deg: number | null;
   strike_right_knee_angle_deg: number | null;
-  prototype_feedback_code: string;
+  prototype_feedback_code: string | null;
   prototype_feedback: string;
 };
 
@@ -130,7 +129,6 @@ export default function Home() {
       const formData = new FormData();
 
       formData.append("video", selectedFile);
-      formData.append("roi", DEFAULT_ROI);
 
       const response = await fetch(`${API_BASE}/analyze`, {
         method: "POST",
@@ -234,7 +232,7 @@ export default function Home() {
           {voiceEnabled ? "◉ VOICE ON" : "○ VOICE OFF"}
         </button>
 
-        
+
         <div className="system-status">
           <span className="status-dot" />
           SYSTEM ONLINE
@@ -429,8 +427,10 @@ export default function Home() {
 
                 <div className="feedback-type">
                   {result.summary.prototype_feedback_code
-                    .replaceAll("_", " ")
-                    .toUpperCase()}
+                    ? result.summary.prototype_feedback_code
+                        .replaceAll("_", " ")
+                        .toUpperCase()
+                    : "GENERAL FEEDBACK"}
                 </div>
               </div>
             </div>

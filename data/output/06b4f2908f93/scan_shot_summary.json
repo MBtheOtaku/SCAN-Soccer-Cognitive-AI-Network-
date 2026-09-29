@@ -1,0 +1,14 @@
+{
+  "total_frames": 100,
+  "valid_pose_frames": 96,
+  "pose_coverage": 0.96,
+  "probable_striking_leg": "left",
+  "probable_strike_frame": 45,
+  "probable_strike_time_s": 1.5,
+  "strike_peak_relative_ankle_speed_px_s": 566.2612077788308,
+  "strike_torso_lean_deg": 2.5284693920528687,
+  "strike_left_knee_angle_deg": 39.40611003493571,
+  "strike_right_knee_angle_deg": 148.4353878217008,
+  "prototype_feedback_code": "strike_detected",
+  "prototype_feedback": "Prototype cue: left-foot strike detected; keep the right side stable through contact."
+}
