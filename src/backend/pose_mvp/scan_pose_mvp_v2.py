@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import subprocess
+import random 
 
 # Load MediaPipe dynamically so static analysis does not require its optional
 # package metadata to be installed in the editor's Python environment.
@@ -254,8 +255,34 @@ def prototype_feedback(metrics: Sequence[FrameMetrics], strike_idx: Optional[int
         return "upper_body_variability", "Prototype cue: keep your upper body a little steadier through the strike."
 
     plant_leg = "right" if striking_leg == "left" else "left"
-    return "strike_detected", f"Prototype cue: {striking_leg}-foot strike detected; keep the {plant_leg} side stable through contact."
 
+    options = [
+        (
+            f"Nice strike. Try to keep your {plant_leg} side "
+            "a little steadier through contact."
+        ),
+        (
+            f"Good connection there. Stay a bit stronger over "
+            f"that {plant_leg} side as you hit through it."
+        ),
+        (
+            f"That looked solid. Keep the {plant_leg} side "
+            "composed through contact."
+        ),
+        (
+            f"Good rep. Just stay a little more stable on the "
+            f"{plant_leg} side as you strike."
+        ),
+        (
+            f"Nice one. Hold that {plant_leg} side steady "
+            "through the ball."
+        ),
+    ]
+
+    return (
+        "strike_detected",
+        random.choice(options),
+    )
 
 def build_summary(metrics: Sequence[FrameMetrics], total_frames: int, fps: float) -> ShotSummary:
     coverage = (len(metrics) / total_frames) if total_frames else 0.0

@@ -1,0 +1,14 @@
+{
+  "total_frames": 100,
+  "valid_pose_frames": 80,
+  "pose_coverage": 0.8,
+  "probable_striking_leg": "left",
+  "probable_strike_frame": 45,
+  "probable_strike_time_s": 1.5,
+  "strike_peak_relative_ankle_speed_px_s": 577.5796618898106,
+  "strike_torso_lean_deg": 2.8749581029080225,
+  "strike_left_knee_angle_deg": 38.646626542480746,
+  "strike_right_knee_angle_deg": 147.07819875305913,
+  "prototype_feedback_code": "strike_detected",
+  "prototype_feedback": "Good connection there. Stay a bit stronger over that right side as you hit through it."
+}
