@@ -226,7 +226,19 @@ def analyze_goal_outcome(
     post_strike = [
         detection
         for detection in detections
-        if detection.frame_idx >= strike_frame
+        if (
+            detection.frame_idx
+            >= strike_frame
+
+            and
+
+            getattr(
+                detection,
+                "source",
+                "detected",
+            )
+            != "predicted"
+        )
     ]
 
     if not post_strike:

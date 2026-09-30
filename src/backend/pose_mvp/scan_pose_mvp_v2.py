@@ -934,7 +934,10 @@ def analyze(
     # ---------------------------------------------------------
 
     ball_result = track_ball(
-        video,
+        video_path=video,
+        strike_frame=(
+            summary.probable_strike_frame
+        ),
     )
 
     ball_summary = ball_result.summary
@@ -1000,8 +1003,11 @@ def analyze(
     print(
         "Ball tracking: "
         f"detected={ball_summary.detected}, "
-        f"detections={ball_summary.detection_count}, "
-        f"rate={ball_summary.detection_rate:.2f}"
+        f"observations={ball_summary.detection_count}, "
+        f"reacquired={ball_summary.reacquired_count}, "
+        f"predicted={ball_summary.predicted_count}, "
+        f"last_observed={ball_summary.last_frame}, "
+        f"tracking_end={ball_summary.tracking_end_frame}"
     )
 
     # ---------------------------------------------------------
@@ -1051,8 +1057,12 @@ def analyze(
 
     draw_ball_trail(
         video_path=output,
-        detections=ball_result.detections,
-        strike_frame=summary.probable_strike_frame,
+        detections=(
+            ball_result.detections
+        ),
+        strike_frame=(
+            summary.probable_strike_frame
+        ),
     )
 
     return summary
