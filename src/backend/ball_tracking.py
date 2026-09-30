@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
-
+import subprocess
 import cv2
 
 
@@ -295,6 +295,255 @@ def track_ball(
         detections=detections,
     )
 
+def draw_ball_trail(
+    video_path: Path,
+    detections: list[BallDetection],
+    strike_frame: Optional[int],
+    max_gap_frames: int = 3,
+) -> None:
+    """
+    Draw the observed post-strike ball trajectory onto
+    SCAN's already-annotated video.
+
+    The trail begins at the estimated strike frame and
+    persists for the remainder of the video.
+
+    It only draws observed detections. It does not invent
+    or extrapolate a trajectory when the ball is lost.
+    """
+
+    if strike_frame is None:
+        return
+
+    post_strike = [
+        detection
+        for detection in detections
+        if detection.frame_idx >= strike_frame
+    ]
+
+    if not post_strike:
+        return
+
+    detections_by_frame = {
+        detection.frame_idx: detection
+        for detection in post_strike
+    }
+
+    cap = cv2.VideoCapture(
+        str(video_path)
+    )
+
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open video for trail rendering: "
+            f"{video_path}"
+        )
+
+    fps = float(
+        cap.get(cv2.CAP_PROP_FPS) or 30.0
+    )
+
+    width = int(
+        cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    )
+
+    height = int(
+        cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    )
+
+    temp_output = video_path.with_name(
+        f"{video_path.stem}_trail_temp.mp4"
+    )
+
+    writer = cv2.VideoWriter(
+        str(temp_output),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+
+    if not writer.isOpened():
+        cap.release()
+
+        raise RuntimeError(
+            "Could not create temporary "
+            "ball-trail video."
+        )
+
+    # Stores:
+    # (frame index, (x, y))
+    trail_points: list[
+        tuple[int, tuple[int, int]]
+    ] = []
+
+    frame_idx = 0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+
+            if not ok:
+                break
+
+            detection = detections_by_frame.get(
+                frame_idx
+            )
+
+            if detection is not None:
+                point = (
+                    int(round(detection.center_x)),
+                    int(round(detection.center_y)),
+                )
+
+                trail_points.append(
+                    (
+                        frame_idx,
+                        point,
+                    )
+                )
+
+            # ---------------------------------------------
+            # Draw accumulated trajectory
+            # ---------------------------------------------
+
+            for (
+                previous,
+                current,
+            ) in zip(
+                trail_points,
+                trail_points[1:],
+            ):
+                previous_frame, previous_point = (
+                    previous
+                )
+
+                current_frame, current_point = (
+                    current
+                )
+
+                # Don't connect large gaps where the ball
+                # was not actually observed.
+                if (
+                    current_frame
+                    - previous_frame
+                    <= max_gap_frames
+                ):
+                    cv2.line(
+                        frame,
+                        previous_point,
+                        current_point,
+                        (0, 255, 255),
+                        3,
+                        cv2.LINE_AA,
+                    )
+
+            # ---------------------------------------------
+            # Highlight current observed ball
+            # ---------------------------------------------
+
+            if detection is not None:
+                current_point = (
+                    int(round(detection.center_x)),
+                    int(round(detection.center_y)),
+                )
+
+                radius = max(
+                    8,
+                    int(
+                        round(
+                            max(
+                                detection.bbox_width,
+                                detection.bbox_height,
+                            )
+                            / 2
+                        )
+                    ),
+                )
+
+                cv2.circle(
+                    frame,
+                    current_point,
+                    radius,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                cv2.circle(
+                    frame,
+                    current_point,
+                    4,
+                    (0, 255, 255),
+                    -1,
+                    cv2.LINE_AA,
+                )
+
+                cv2.putText(
+                    frame,
+                    "BALL",
+                    (
+                        current_point[0] + 12,
+                        current_point[1] - 12,
+                    ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            # ---------------------------------------------
+            # Label trajectory after the strike
+            # ---------------------------------------------
+
+            if (
+                frame_idx >= strike_frame
+                and len(trail_points) >= 2
+            ):
+                cv2.putText(
+                    frame,
+                    "SHOT TRAJECTORY",
+                    (18, height - 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            writer.write(
+                frame
+            )
+
+            frame_idx += 1
+
+    finally:
+        cap.release()
+        writer.release()
+
+    # Convert back to browser-compatible H.264 and
+    # replace the original SCAN annotated video.
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(temp_output),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-an",
+            str(video_path),
+        ],
+        check=True,
+    )
+
+    temp_output.unlink(
+        missing_ok=True
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser(

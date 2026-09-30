@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from src.backend.situated_state import SituatedState
 from src.backend.ball_tracking import (
     BallTrackSummary,
+    draw_ball_trail,
     track_ball,
 )
 from src.backend.goal_tracking import (
@@ -1043,6 +1044,15 @@ def analyze(
             indent=2,
         ),
         encoding="utf-8",
+    )
+    # ---------------------------------------------------------
+    # Render observed post-strike ball trajectory
+    # ---------------------------------------------------------
+
+    draw_ball_trail(
+        video_path=output,
+        detections=ball_result.detections,
+        strike_frame=summary.probable_strike_frame,
     )
 
     return summary
