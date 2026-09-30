@@ -18,7 +18,16 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
-
+from src.backend.situated_state import SituatedState
+from src.backend.ball_tracking import (
+    BallTrackSummary,
+    track_ball,
+)
+from src.backend.goal_tracking import (
+    GoalCalibration,
+    GoalOutcome,
+    analyze_goal_outcome,
+)
 import cv2
 import numpy as np
 import subprocess
@@ -309,6 +318,114 @@ def build_summary(metrics: Sequence[FrameMetrics], total_frames: int, fps: float
         prototype_feedback=feedback,
     )
 
+def build_situated_state(
+    summary: ShotSummary,
+    ball_summary: BallTrackSummary,
+    goal_outcome: GoalOutcome,
+    rep_id: int = 1,
+) -> SituatedState:
+    """
+    Convert the completed pose-analysis result into a contextual
+    representation of the player's shooting rep.
+
+    This is the bridge between low-level perception and later
+    probabilistic / cognitive reasoning.
+    """
+
+    # -----------------------------------------------------
+    # Determine support leg
+    # -----------------------------------------------------
+
+    support_leg: Optional[str] = None
+
+    if summary.probable_striking_leg == "left":
+        support_leg = "right"
+
+    elif summary.probable_striking_leg == "right":
+        support_leg = "left"
+
+    # -----------------------------------------------------
+    # Perception quality
+    # -----------------------------------------------------
+
+    # Provisional threshold.
+    # Later this should be validated rather than hard-coded.
+    perception_usable = (
+        summary.pose_coverage >= 0.60
+    )
+
+    # -----------------------------------------------------
+    # Build contextual state
+    # -----------------------------------------------------
+
+    return SituatedState(
+        rep_id=rep_id,
+
+        drill_type="shooting",
+        task_goal="execute a controlled shot",
+
+        # The current MVP analyzes the whole uploaded rep,
+        # so by this point the action has completed.
+        action_phase="rep_complete",
+
+        pose_coverage=summary.pose_coverage,
+        perception_usable=perception_usable,
+
+        striking_leg=summary.probable_striking_leg,
+        support_leg=support_leg,
+
+        strike_frame=summary.probable_strike_frame,
+        strike_time_s=summary.probable_strike_time_s,
+
+        torso_lean_deg=summary.strike_torso_lean_deg,
+        left_knee_deg=summary.strike_left_knee_angle_deg,
+        right_knee_deg=summary.strike_right_knee_angle_deg,
+
+        # Ball / environment evidence
+        ball_visible=ball_summary.detected,
+
+        ball_tracking_confidence=(
+            ball_summary.mean_confidence
+        ),
+
+        ball_detection_rate=(
+            ball_summary.detection_rate
+        ),
+
+        ball_final_x_norm=(
+            ball_summary.final_x_norm
+        ),
+
+        ball_final_y_norm=(
+            ball_summary.final_y_norm
+        ),
+
+        shot_on_target=(
+            goal_outcome.shot_on_target
+        ),
+
+        goal_entry_detected=(
+            goal_outcome.goal_entry_detected
+        ),
+
+        goal_zone=(
+            goal_outcome.goal_zone
+        ),
+
+        environment_confidence=(
+            ball_summary.mean_confidence
+            if ball_summary.detected
+            else None
+        ),
+
+        # PlayerState history will populate these later.
+        repeated_error_type=None,
+        repeated_error_count=0,
+
+        seconds_since_last_feedback=None,
+        previous_feedback_type=None,
+        recent_improvement=None,
+    )
 
 def draw_pose(frame: np.ndarray, landmarks, roi: ROI) -> None:
     points: Dict[int, Tuple[int, int]] = {}
@@ -584,6 +701,7 @@ def detect_player_roi(
         y2=y2,
     )
 
+
 def analyze(
     video: Path,
     model: Path,
@@ -810,16 +928,124 @@ def analyze(
         fps,
     )
 
+    # ---------------------------------------------------------
+    # Ball detection / tracking
+    # ---------------------------------------------------------
+
+    ball_result = track_ball(
+        video,
+    )
+
+    ball_summary = ball_result.summary
+
+    # ---------------------------------------------------------
+    # Goal analysis
+    # ---------------------------------------------------------
+
+    goal_calibration_path = Path(
+        "data/goal_calibration.json"
+    )
+
+    if goal_calibration_path.exists():
+
+        goal_calibration = (
+            GoalCalibration.load(
+                goal_calibration_path
+            )
+        )
+
+        goal_outcome = (
+            analyze_goal_outcome(
+                detections=(
+                    ball_result.detections
+                ),
+
+                strike_frame=(
+                    summary.probable_strike_frame
+                ),
+
+                calibration=(
+                    goal_calibration
+                ),
+
+                frame_width=width,
+                frame_height=height,
+            )
+        )
+
+    else:
+
+        print(
+            "No goal calibration found. "
+            "Goal analysis skipped."
+        )
+
+        goal_outcome = GoalOutcome(
+            goal_calibrated=False,
+
+            goal_entry_detected=None,
+            shot_on_target=None,
+
+            entry_x_norm=None,
+            entry_y_norm=None,
+
+            entry_frame=None,
+            entry_time_s=None,
+
+            goal_zone=None,
+            confidence=None,
+        )
+
+    print(
+        "Ball tracking: "
+        f"detected={ball_summary.detected}, "
+        f"detections={ball_summary.detection_count}, "
+        f"rate={ball_summary.detection_rate:.2f}"
+    )
+
+    # ---------------------------------------------------------
+    # Situated state
+    # ---------------------------------------------------------
+
+    situated_state = build_situated_state(
+        summary,
+        ball_summary,
+        goal_outcome,
+        rep_id=1,
+    )
+
+    # ---------------------------------------------------------
+    # Combined analysis payload
+    # ---------------------------------------------------------
+
+    analysis_payload = asdict(summary)
+
+    analysis_payload["ball_tracking"] = {
+        **ball_summary.to_dict(),
+
+        "trajectory": [
+            asdict(detection)
+            for detection in ball_result.detections
+        ],
+    }
+
+    analysis_payload["goal_tracking"] = (
+        goal_outcome.to_dict()
+    )
+
+    analysis_payload["situated_state"] = (
+        situated_state.to_dict()
+    )
+
     json_path.write_text(
         json.dumps(
-            asdict(summary),
+            analysis_payload,
             indent=2,
         ),
         encoding="utf-8",
     )
 
     return summary
-
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SCAN pose/strike MVP")

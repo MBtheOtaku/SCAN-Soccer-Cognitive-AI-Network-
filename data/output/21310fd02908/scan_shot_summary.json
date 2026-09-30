@@ -1,0 +1,14 @@
+{
+  "total_frames": 110,
+  "valid_pose_frames": 102,
+  "pose_coverage": 0.9272727272727272,
+  "probable_striking_leg": "left",
+  "probable_strike_frame": 48,
+  "probable_strike_time_s": 1.6552727272727272,
+  "strike_peak_relative_ankle_speed_px_s": 450.56022145429773,
+  "strike_torso_lean_deg": 1.6572721395982632,
+  "strike_left_knee_angle_deg": 62.03059719493684,
+  "strike_right_knee_angle_deg": 154.66664648403167,
+  "prototype_feedback_code": "strike_detected",
+  "prototype_feedback": "Nice one. Hold that right side steady through the ball."
+}
