@@ -28,6 +28,7 @@ from src.backend.goal_tracking import (
     GoalCalibration,
     GoalOutcome,
     analyze_goal_outcome,
+    draw_goal_overlay,
 )
 import cv2
 import numpy as np
@@ -721,6 +722,12 @@ def analyze(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    goal_calibration = None
+    goal_calibration_path = Path("data/goal_calibration.json")
+
+    if goal_calibration_path.exists():
+        goal_calibration = GoalCalibration.load(goal_calibration_path)
+
     # ---------------------------------------------------------
     # ROI calibration
     # ---------------------------------------------------------
@@ -881,6 +888,9 @@ def analyze(
                     roi,
                 )
 
+                if goal_calibration is not None:
+                    draw_goal_overlay(frame, goal_calibration)
+
                 writer.write(frame)
 
                 frame_idx += 1
@@ -1002,12 +1012,14 @@ def analyze(
 
     print(
         "Ball tracking: "
-        f"detected={ball_summary.detected}, "
-        f"observations={ball_summary.detection_count}, "
+        f"trusted={ball_summary.detection_count}, "
         f"reacquired={ball_summary.reacquired_count}, "
+        f"tentative={ball_summary.tentative_count}, "
         f"predicted={ball_summary.predicted_count}, "
         f"last_observed={ball_summary.last_frame}, "
-        f"tracking_end={ball_summary.tracking_end_frame}"
+        f"tracking_end={ball_summary.tracking_end_frame}, "
+        f"longest_prediction_gap="
+        f"{ball_summary.longest_prediction_gap}"
     )
 
     # ---------------------------------------------------------

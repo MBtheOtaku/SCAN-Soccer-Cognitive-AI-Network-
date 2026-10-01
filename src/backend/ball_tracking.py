@@ -13,7 +13,6 @@ import numpy as np
 from ultralytics import YOLO
 
 
-# COCO class 32 = sports ball
 SPORTS_BALL_CLASS_ID = 32
 
 
@@ -37,15 +36,19 @@ class BallDetection:
     bbox_height: float
 
     confidence: float
-
-    # SCAN currently maintains one active ball track
-    # during a shooting rep.
     track_id: Optional[int]
 
-    # detected   = observed normally
-    # reacquired = lost previously, then observed again
-    # predicted  = short-horizon motion estimate only
+    # detected
+    # tentative
+    # reacquired
+    # predicted
     source: str
+
+    # How strongly this candidate agrees with the
+    # existing motion trajectory.
+    #
+    # This is intentionally separate from YOLO confidence.
+    association_score: Optional[float] = None
 
 
 @dataclass
@@ -54,18 +57,18 @@ class BallTrackSummary:
 
     total_frames: int
 
-    # Observed + reacquired detections.
-    # Predicted points do NOT count as detections.
+    # Only trusted real observations:
+    # detected + confirmed reacquired.
     detection_count: int
     detection_rate: float
 
     reacquired_count: int
+    tentative_count: int
     predicted_count: int
 
     mean_confidence: Optional[float]
     peak_confidence: Optional[float]
 
-    # First / last REAL observation.
     first_frame: Optional[int]
     last_frame: Optional[int]
 
@@ -75,9 +78,9 @@ class BallTrackSummary:
     final_x_norm: Optional[float]
     final_y_norm: Optional[float]
 
-    # Last frame represented by the complete trajectory,
-    # which may include short predicted gaps.
     tracking_end_frame: Optional[int]
+
+    longest_prediction_gap: int
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,19 +93,21 @@ class BallTrackResult:
 
 
 # =========================================================
-# SHORT-HORIZON MOTION MODEL
+# MOTION MODEL
 # =========================================================
 
 
 class BallMotionModel:
     """
-    Short-horizon ball motion model.
+    Short-horizon motion model based only on trusted,
+    real ball observations.
 
-    Only REAL observations are stored in history.
-    Predicted points never feed back into the model.
+    IMPORTANT:
+    predicted and tentative points are never fed back
+    into this model.
 
-    That prevents a bad prediction from recursively
-    drifting farther and farther away.
+    This prevents prediction drift from becoming
+    self-reinforcing.
     """
 
     def __init__(
@@ -182,12 +187,11 @@ class BallMotionModel:
         self,
     ) -> None:
         """
-        The pre-strike ball is usually stationary.
+        Before the kick the ball is mostly stationary.
 
-        Once the strike begins, old stationary samples
-        should not dominate the motion estimate.
-
-        Keep only the latest real observation.
+        At the dynamically detected strike frame,
+        discard the old stationary history so it does
+        not suppress the post-strike velocity estimate.
         """
 
         if self.history:
@@ -203,23 +207,12 @@ class BallMotionModel:
     ) -> Optional[
         tuple[float, float]
     ]:
-        """
-        Predict ball center at target_frame.
-
-        X is modeled linearly.
-
-        Y uses a short quadratic fit once enough
-        observations are available, allowing mild
-        curvature / gravity in the image trajectory.
-
-        With fewer observations it falls back to
-        linear motion.
-        """
 
         if not self.history:
             return None
 
         if len(self.history) == 1:
+
             last = self.history[-1]
 
             return (
@@ -253,8 +246,6 @@ class BallMotionModel:
             dtype=np.float64,
         )
 
-        # Shift frame numbers close to zero for
-        # better numerical stability.
         base_frame = frames[0]
 
         times = (
@@ -266,9 +257,8 @@ class BallMotionModel:
         )
 
         try:
-            # Horizontal motion is normally well
-            # approximated over this short window
-            # by a straight line.
+
+            # Short-horizon horizontal motion.
             x_coeff = np.polyfit(
                 times,
                 xs,
@@ -282,8 +272,7 @@ class BallMotionModel:
                 )
             )
 
-            # Allow mild vertical curvature if
-            # enough real observations exist.
+            # Allow mild vertical curvature.
             y_degree = (
                 2
                 if len(samples) >= 4
@@ -312,8 +301,6 @@ class BallMotionModel:
             np.linalg.LinAlgError,
             ValueError,
         ):
-            # Safe fallback: use the last two
-            # observations and constant velocity.
 
             previous = samples[-2]
             current = samples[-1]
@@ -380,15 +367,6 @@ class BallMotionModel:
         frame_width: int,
         frame_height: int,
     ) -> float:
-        """
-        Dynamically expand the search region using:
-
-        - previous ball size
-        - current estimated speed
-        - number of missed frames
-
-        No clip-specific coordinates are used.
-        """
 
         minimum_dimension = min(
             frame_width,
@@ -430,9 +408,6 @@ class BallMotionModel:
             + uncertainty_radius
         )
 
-        # Prevent an uncertainty explosion from
-        # effectively turning the local search
-        # back into the entire image.
         maximum_radius = (
             maximum_dimension * 0.30
         )
@@ -451,8 +426,6 @@ class BallMotionModel:
             or 0.25
         )
 
-        # Confidence decays each frame that the
-        # ball is not actually observed.
         confidence = (
             starting_confidence
             * (
@@ -466,9 +439,602 @@ class BallMotionModel:
             float(confidence),
         )
 
+class OpticalBallTracker:
+    """
+    Tracks the ball frame-to-frame using pyramidal
+    Lucas-Kanade optical flow.
+
+    YOLO initializes/corrects this tracker.
+
+    The motion model is only used as a spatial sanity
+    check -- it does NOT determine the optical-flow
+    ball position.
+    """
+
+    def __init__(self) -> None:
+        self.prev_gray: Optional[np.ndarray] = None
+
+        self.points: Optional[np.ndarray] = None
+
+        self.center: Optional[
+            tuple[float, float]
+        ] = None
+
+        self.bbox_width: float = 0.0
+        self.bbox_height: float = 0.0
+
+        self.last_frame: Optional[int] = None
+
+    @property
+    def active(self) -> bool:
+        return (
+            self.prev_gray is not None
+            and self.points is not None
+            and self.center is not None
+            and self.last_frame is not None
+        )
+
+    def deactivate(self) -> None:
+        self.prev_gray = None
+        self.points = None
+        self.center = None
+        self.last_frame = None
+
+    def _seed_points(
+        self,
+        gray: np.ndarray,
+        detection: BallDetection,
+    ) -> np.ndarray:
+        """
+        Find trackable image features around the
+        currently observed ball.
+
+        If the tiny ball has too little texture for
+        Shi-Tomasi features, fall back to a small grid
+        of points around the ball center.
+        """
+
+        height, width = gray.shape[:2]
+
+        cx = float(detection.center_x)
+        cy = float(detection.center_y)
+
+        ball_size = max(
+            detection.bbox_width,
+            detection.bbox_height,
+            6.0,
+        )
+
+        radius = max(
+            7,
+            int(round(ball_size * 0.8)),
+        )
+
+        x1 = max(
+            0,
+            int(round(cx - radius)),
+        )
+
+        y1 = max(
+            0,
+            int(round(cy - radius)),
+        )
+
+        x2 = min(
+            width - 1,
+            int(round(cx + radius)),
+        )
+
+        y2 = min(
+            height - 1,
+            int(round(cy + radius)),
+        )
+
+        mask = np.zeros_like(
+            gray,
+            dtype=np.uint8,
+        )
+
+        cv2.rectangle(
+            mask,
+            (x1, y1),
+            (x2, y2),
+            255,
+            -1,
+        )
+
+        features = cv2.goodFeaturesToTrack(
+            gray,
+            maxCorners=16,
+            qualityLevel=0.01,
+            minDistance=2,
+            mask=mask,
+            blockSize=3,
+        )
+
+        points: list[
+            tuple[float, float]
+        ] = []
+
+        if features is not None:
+            for feature in features:
+                x, y = feature.ravel()
+
+                points.append(
+                    (
+                        float(x),
+                        float(y),
+                    )
+                )
+
+        # Tiny / blurred soccer balls may not have
+        # enough strong corners. Add points around
+        # the ball center as fallback tracking probes.
+        if len(points) < 5:
+
+            offset = max(
+                2.0,
+                ball_size * 0.25,
+            )
+
+            for dx in (
+                -offset,
+                0.0,
+                offset,
+            ):
+                for dy in (
+                    -offset,
+                    0.0,
+                    offset,
+                ):
+
+                    x = float(
+                        np.clip(
+                            cx + dx,
+                            0,
+                            width - 1,
+                        )
+                    )
+
+                    y = float(
+                        np.clip(
+                            cy + dy,
+                            0,
+                            height - 1,
+                        )
+                    )
+
+                    points.append(
+                        (x, y)
+                    )
+
+        return np.array(
+            points,
+            dtype=np.float32,
+        ).reshape(
+            -1,
+            1,
+            2,
+        )
+
+    def reset(
+        self,
+        gray: np.ndarray,
+        detection: BallDetection,
+    ) -> None:
+        """
+        Initialize/correct optical flow from a trusted
+        YOLO observation.
+        """
+
+        self.prev_gray = gray.copy()
+
+        self.center = (
+            float(detection.center_x),
+            float(detection.center_y),
+        )
+
+        self.bbox_width = max(
+            float(detection.bbox_width),
+            4.0,
+        )
+
+        self.bbox_height = max(
+            float(detection.bbox_height),
+            4.0,
+        )
+
+        self.last_frame = (
+            detection.frame_idx
+        )
+
+        self.points = self._seed_points(
+            gray,
+            detection,
+        )
+
+    def track(
+        self,
+        gray: np.ndarray,
+        frame_idx: int,
+        timestamp_s: float,
+        frame_width: int,
+        frame_height: int,
+        predicted_center: Optional[
+            tuple[float, float]
+        ],
+        gate_radius: Optional[float],
+    ) -> Optional[BallDetection]:
+        """
+        Track the actual image content from the previous
+        frame into this frame.
+
+        Uses forward/backward optical-flow consistency to
+        reject unstable points.
+        """
+
+        if not self.active:
+            return None
+
+        assert self.prev_gray is not None
+        assert self.points is not None
+        assert self.center is not None
+        assert self.last_frame is not None
+
+        # Optical flow should only bridge consecutive frames.
+        if frame_idx != self.last_frame + 1:
+            self.deactivate()
+            return None
+
+        next_points, status_forward, _ = (
+            cv2.calcOpticalFlowPyrLK(
+                self.prev_gray,
+                gray,
+                self.points,
+                None,
+                winSize=(21, 21),
+                maxLevel=3,
+                criteria=(
+                    cv2.TERM_CRITERIA_EPS
+                    | cv2.TERM_CRITERIA_COUNT,
+                    30,
+                    0.01,
+                ),
+            )
+        )
+
+        if (
+            next_points is None
+            or status_forward is None
+        ):
+            self.deactivate()
+            return None
+
+        back_points, status_backward, _ = (
+            cv2.calcOpticalFlowPyrLK(
+                gray,
+                self.prev_gray,
+                next_points,
+                None,
+                winSize=(21, 21),
+                maxLevel=3,
+                criteria=(
+                    cv2.TERM_CRITERIA_EPS
+                    | cv2.TERM_CRITERIA_COUNT,
+                    30,
+                    0.01,
+                ),
+            )
+        )
+
+        if (
+            back_points is None
+            or status_backward is None
+        ):
+            self.deactivate()
+            return None
+
+        previous = self.points.reshape(
+            -1,
+            2,
+        )
+
+        current = next_points.reshape(
+            -1,
+            2,
+        )
+
+        backward = back_points.reshape(
+            -1,
+            2,
+        )
+
+        forward_ok = (
+            status_forward.reshape(-1)
+            == 1
+        )
+
+        backward_ok = (
+            status_backward.reshape(-1)
+            == 1
+        )
+
+        fb_error = np.linalg.norm(
+            previous - backward,
+            axis=1,
+        )
+
+        valid = (
+            forward_ok
+            & backward_ok
+            & (fb_error < 2.0)
+        )
+
+        if np.count_nonzero(valid) < 3:
+            self.deactivate()
+            return None
+
+        previous_valid = previous[
+            valid
+        ]
+
+        current_valid = current[
+            valid
+        ]
+
+        fb_valid = fb_error[
+            valid
+        ]
+
+        displacement = (
+            current_valid
+            - previous_valid
+        )
+
+        median_displacement = (
+            np.median(
+                displacement,
+                axis=0,
+            )
+        )
+
+        residuals = np.linalg.norm(
+            displacement
+            - median_displacement,
+            axis=1,
+        )
+
+        median_residual = float(
+            np.median(
+                residuals
+            )
+        )
+
+        residual_limit = max(
+            2.0,
+            median_residual * 2.5 + 1.0,
+        )
+
+        inliers = (
+            residuals
+            <= residual_limit
+        )
+
+        if np.count_nonzero(inliers) < 3:
+            self.deactivate()
+            return None
+
+        good_current = current_valid[
+            inliers
+        ]
+
+        good_fb = fb_valid[
+            inliers
+        ]
+
+        dx = float(
+            np.median(
+                displacement[
+                    inliers,
+                    0,
+                ]
+            )
+        )
+
+        dy = float(
+            np.median(
+                displacement[
+                    inliers,
+                    1,
+                ]
+            )
+        )
+
+        new_x = (
+            self.center[0] + dx
+        )
+
+        new_y = (
+            self.center[1] + dy
+        )
+
+        if not (
+            0.0 <= new_x < frame_width
+            and
+            0.0 <= new_y < frame_height
+        ):
+            self.deactivate()
+            return None
+
+        # -------------------------------------------------
+        # Motion model is a SANITY CHECK only.
+        # -------------------------------------------------
+
+        motion_score = 1.0
+
+        if (
+            predicted_center is not None
+            and gate_radius is not None
+        ):
+
+            distance_to_prediction = (
+                math.hypot(
+                    new_x
+                    - predicted_center[0],
+
+                    new_y
+                    - predicted_center[1],
+                )
+            )
+
+            allowed_distance = max(
+                gate_radius,
+                max(
+                    self.bbox_width,
+                    self.bbox_height,
+                )
+                * 4.0,
+            )
+
+            if (
+                distance_to_prediction
+                > allowed_distance
+            ):
+                self.deactivate()
+                return None
+
+            sigma = max(
+                allowed_distance * 0.5,
+                1.0,
+            )
+
+            motion_score = math.exp(
+                -0.5
+                * (
+                    distance_to_prediction
+                    / sigma
+                )
+                ** 2
+            )
+
+        # -------------------------------------------------
+        # Optical-flow confidence
+        # -------------------------------------------------
+
+        original_count = len(
+            self.points
+        )
+
+        inlier_ratio = (
+            len(good_current)
+            / max(
+                original_count,
+                1,
+            )
+        )
+
+        median_fb_error = float(
+            np.median(
+                good_fb
+            )
+        )
+
+        fb_score = math.exp(
+            -median_fb_error / 2.0
+        )
+
+        confidence = (
+            0.50 * inlier_ratio
+            + 0.30 * fb_score
+            + 0.20 * motion_score
+        )
+
+        # If the optical-flow evidence itself is poor,
+        # do not pretend we have an observed ball.
+        if confidence < 0.40:
+            self.deactivate()
+            return None
+
+        detection = BallDetection(
+            frame_idx=frame_idx,
+
+            timestamp_s=timestamp_s,
+
+            center_x=new_x,
+            center_y=new_y,
+
+            center_x_norm=(
+                new_x / frame_width
+            ),
+
+            center_y_norm=(
+                new_y / frame_height
+            ),
+
+            bbox_width=self.bbox_width,
+            bbox_height=self.bbox_height,
+
+            # For source="visual", this represents
+            # optical-flow tracking confidence rather
+            # than YOLO classification confidence.
+            confidence=float(
+                confidence
+            ),
+
+            track_id=1,
+
+            source="visual",
+
+            association_score=float(
+                motion_score
+            ),
+        )
+
+        # -------------------------------------------------
+        # Advance visual tracker state
+        # -------------------------------------------------
+
+        self.prev_gray = (
+            gray.copy()
+        )
+
+        self.center = (
+            new_x,
+            new_y,
+        )
+
+        self.last_frame = (
+            frame_idx
+        )
+
+        self.points = (
+            good_current
+            .astype(
+                np.float32
+            )
+            .reshape(
+                -1,
+                1,
+                2,
+            )
+        )
+
+        # If too many points have disappeared,
+        # reseed around the new visual ball location.
+        if len(self.points) < 5:
+
+            self.points = (
+                self._seed_points(
+                    gray,
+                    detection,
+                )
+            )
+
+        return detection
+
 
 # =========================================================
-# YOLO HELPERS
+# YOLO
 # =========================================================
 
 
@@ -523,6 +1089,7 @@ def _detections_from_result(
     for index in range(
         len(boxes)
     ):
+
         confidence = float(
             boxes.conf[index].item()
         )
@@ -533,8 +1100,6 @@ def _detections_from_result(
             .tolist()
         )
 
-        # Local-crop coordinates must be
-        # converted back into full-frame space.
         x1 += offset_x
         x2 += offset_x
 
@@ -577,15 +1142,20 @@ def _detections_from_result(
 
                 confidence=confidence,
 
-                # SCAN currently assumes one active
-                # soccer ball in a shooting rep.
                 track_id=1,
 
                 source="detected",
+
+                association_score=None,
             )
         )
 
     return detections
+
+
+# =========================================================
+# CANDIDATE ASSOCIATION
+# =========================================================
 
 
 def _candidate_score(
@@ -613,7 +1183,8 @@ def _candidate_score(
         dy,
     )
 
-    # Hard spatial gate.
+    # Reject candidates far outside the
+    # predicted motion region.
     if distance > (
         gate_radius * 1.5
     ):
@@ -642,6 +1213,7 @@ def _candidate_score(
         expected_size is not None
         and expected_size > 0
     ):
+
         size_ratio = (
             candidate_size
             / expected_size
@@ -661,21 +1233,24 @@ def _candidate_score(
     else:
         size_score = 1.0
 
-    # Confidence matters, but when the ball
-    # becomes tiny we intentionally allow
-    # spatial continuity to provide evidence.
+    # Detector confidence is only one source
+    # of evidence.
+    #
+    # A tiny soccer ball can have low YOLO
+    # confidence but still agree extremely
+    # strongly with the expected motion.
     score = (
-        0.50
+        0.45
         * candidate.confidence
 
-        + 0.40
+        + 0.45
         * distance_score
 
         + 0.10
         * size_score
     )
 
-    return score
+    return float(score)
 
 
 def _select_best_candidate(
@@ -690,17 +1265,23 @@ def _select_best_candidate(
     if not candidates:
         return None
 
-    # Before a trajectory exists, use the
-    # highest-confidence sports-ball candidate.
+    # No trajectory yet.
     if (
         predicted_center is None
         or gate_radius is None
     ):
-        return max(
+
+        best = max(
             candidates,
             key=lambda detection:
             detection.confidence,
         )
+
+        best.association_score = (
+            best.confidence
+        )
+
+        return best
 
     best_detection = None
     best_score = float("-inf")
@@ -715,7 +1296,9 @@ def _select_best_candidate(
             expected_size=(
                 expected_size
             ),
-            gate_radius=gate_radius,
+            gate_radius=(
+                gate_radius
+            ),
         )
 
         if score is None:
@@ -725,14 +1308,82 @@ def _select_best_candidate(
             best_score = score
             best_detection = candidate
 
-    # Generic evidence threshold.
-    #
-    # A weak detector result can still pass if
-    # it is very consistent with the trajectory.
-    if best_score < 0.25:
+    # Association must have meaningful support.
+    if (
+        best_detection is None
+        or best_score < 0.35
+    ):
         return None
 
+    best_detection.association_score = (
+        best_score
+    )
+
     return best_detection
+
+
+def _tentatives_consistent(
+    previous: BallDetection,
+    current: BallDetection,
+    gate_radius: float,
+) -> bool:
+    """
+    Require consecutive weak candidates to behave
+    like the same moving object before promoting
+    them to confirmed reacquisitions.
+    """
+
+    frame_gap = (
+        current.frame_idx
+        - previous.frame_idx
+    )
+
+    if frame_gap != 1:
+        return False
+
+    distance = math.hypot(
+        current.center_x
+        - previous.center_x,
+
+        current.center_y
+        - previous.center_y,
+    )
+
+    previous_size = max(
+        previous.bbox_width,
+        previous.bbox_height,
+        1.0,
+    )
+
+    current_size = max(
+        current.bbox_width,
+        current.bbox_height,
+        1.0,
+    )
+
+    size_ratio = (
+        current_size
+        / previous_size
+    )
+
+    # Sudden huge size changes are unlikely to
+    # represent the same soccer ball.
+    if not (
+        0.35
+        <= size_ratio
+        <= 2.85
+    ):
+        return False
+
+    allowed_distance = max(
+        gate_radius * 0.60,
+        previous_size * 4.0,
+    )
+
+    return (
+        distance
+        <= allowed_distance
+    )
 
 
 def _make_local_crop(
@@ -810,8 +1461,45 @@ def _make_local_crop(
     )
 
 
+def _longest_prediction_gap(
+    trajectory: list[BallDetection],
+) -> int:
+
+    longest = 0
+    current = 0
+    previous_frame = None
+
+    for detection in trajectory:
+
+        if detection.source == "predicted":
+
+            if (
+                previous_frame is not None
+                and detection.frame_idx
+                == previous_frame + 1
+            ):
+                current += 1
+
+            else:
+                current = 1
+
+            longest = max(
+                longest,
+                current,
+            )
+
+        else:
+            current = 0
+
+        previous_frame = (
+            detection.frame_idx
+        )
+
+    return longest
+
+
 # =========================================================
-# BALL TRACKER
+# MAIN TRACKER
 # =========================================================
 
 
@@ -820,39 +1508,26 @@ def track_ball(
     strike_frame: Optional[int] = None,
     model_name: str = "yolo26n.pt",
 
-    # Initial / ordinary whole-frame detection.
     full_frame_confidence: float = 0.10,
 
-    # Used only when we already know where the
-    # ball is expected to be.
+    # A weak candidate may be useful locally,
+    # but this does NOT automatically make it
+    # a trusted observation.
     reacquire_confidence: float = 0.02,
 
     full_frame_image_size: int = 1280,
-
-    # The small predicted crop is enlarged by
-    # YOLO to this input size.
     local_image_size: int = 960,
 
-    # Predictions are allowed only briefly.
-    # Real observations are still required for
-    # confirmed goal entry.
-    max_prediction_frames: int = 8,
+    max_prediction_frames: int = 3,
+
+    # A reacquisition this strong can be trusted
+    # immediately.
+    direct_reacquire_confidence: float = 0.18,
+    direct_reacquire_score: float = 0.60,
+
+    # Otherwise require consecutive agreement.
+    tentative_confirm_frames: int = 2,
 ) -> BallTrackResult:
-    """
-    Motion-aware SCAN soccer-ball tracker.
-
-    Strategy:
-
-    PRE-STRIKE
-        Full-frame YOLO establishes the ball.
-
-    POST-STRIKE
-        1. Predict next position from recent real observations.
-        2. Search an adaptive local crop at high effective resolution.
-        3. If local search fails, perform full-frame reacquisition.
-        4. If both fail, emit a short-lived predicted point.
-        5. Never feed predicted points back into the motion model.
-    """
 
     model = YOLO(
         model_name
@@ -894,8 +1569,15 @@ def track_ball(
     )
 
     motion = BallMotionModel()
+    optical = OpticalBallTracker()
 
     trajectory: list[
+        BallDetection
+    ] = []
+
+    # Weak candidates waiting for temporal
+    # confirmation.
+    pending: list[
         BallDetection
     ] = []
 
@@ -903,10 +1585,16 @@ def track_ball(
 
     try:
         while True:
+
             ok, frame = cap.read()
 
             if not ok:
                 break
+
+            gray = cv2.cvtColor(
+                frame,
+                cv2.COLOR_BGR2GRAY,
+            )
 
             timestamp_s = (
                 frame_idx / fps
@@ -918,18 +1606,14 @@ def track_ball(
                 >= strike_frame
             )
 
-            # -----------------------------------------
-            # At the strike, remove old stationary
-            # history so the sudden ball acceleration
-            # can be learned quickly.
-            # -----------------------------------------
-
             if (
                 strike_frame is not None
                 and frame_idx
                 == strike_frame
             ):
                 motion.begin_shot()
+
+                pending.clear()
 
             predicted_center = (
                 motion.predict(
@@ -941,12 +1625,12 @@ def track_ball(
                 BallDetection
             ] = None
 
+            radius: Optional[
+                float
+            ] = None
+
             # -----------------------------------------
-            # POST-STRIKE:
-            # Search locally FIRST.
-            #
-            # This is what helps with a ball that is
-            # rapidly shrinking in the full image.
+            # LOCAL SEARCH
             # -----------------------------------------
 
             if (
@@ -973,9 +1657,11 @@ def track_ball(
                 local_data = (
                     _make_local_crop(
                         frame=frame,
+
                         predicted_center=(
                             predicted_center
                         ),
+
                         radius=radius,
                     )
                 )
@@ -984,6 +1670,7 @@ def track_ball(
                     local_data
                     is not None
                 ):
+
                     (
                         local_crop,
                         offset_x,
@@ -993,10 +1680,13 @@ def track_ball(
                     local_result = (
                         _run_yolo(
                             model=model,
+
                             image=local_crop,
+
                             confidence=(
                                 reacquire_confidence
                             ),
+
                             image_size=(
                                 local_image_size
                             ),
@@ -1008,21 +1698,27 @@ def track_ball(
                             result=(
                                 local_result
                             ),
+
                             frame_idx=(
                                 frame_idx
                             ),
+
                             timestamp_s=(
                                 timestamp_s
                             ),
+
                             frame_width=(
                                 frame_width
                             ),
+
                             frame_height=(
                                 frame_height
                             ),
+
                             offset_x=(
                                 offset_x
                             ),
+
                             offset_y=(
                                 offset_y
                             ),
@@ -1034,12 +1730,15 @@ def track_ball(
                             candidates=(
                                 local_candidates
                             ),
+
                             predicted_center=(
                                 predicted_center
                             ),
+
                             expected_size=(
                                 motion.last_size
                             ),
+
                             gate_radius=(
                                 radius
                             ),
@@ -1047,12 +1746,7 @@ def track_ball(
                     )
 
             # -----------------------------------------
-            # FULL-FRAME SEARCH
-            #
-            # Used normally before the shot.
-            #
-            # After the shot it acts as a fallback
-            # reacquisition mechanism.
+            # FULL-FRAME FALLBACK
             # -----------------------------------------
 
             if selected is None:
@@ -1073,9 +1767,11 @@ def track_ball(
                     _run_yolo(
                         model=model,
                         image=frame,
+
                         confidence=(
                             confidence_threshold
                         ),
+
                         image_size=(
                             full_frame_image_size
                         ),
@@ -1085,13 +1781,19 @@ def track_ball(
                 full_candidates = (
                     _detections_from_result(
                         result=full_result,
-                        frame_idx=frame_idx,
+
+                        frame_idx=(
+                            frame_idx
+                        ),
+
                         timestamp_s=(
                             timestamp_s
                         ),
+
                         frame_width=(
                             frame_width
                         ),
+
                         frame_height=(
                             frame_height
                         ),
@@ -1104,33 +1806,38 @@ def track_ball(
                     is not None
                 ):
 
-                    radius = (
-                        motion.search_radius(
-                            target_frame=(
-                                frame_idx
-                            ),
-                            frame_width=(
-                                frame_width
-                            ),
-                            frame_height=(
-                                frame_height
-                            ),
-                        )
-                    )
+                    if radius is None:
 
-                    # Full-frame fallback gets a
-                    # slightly wider spatial gate.
+                        radius = (
+                            motion.search_radius(
+                                target_frame=(
+                                    frame_idx
+                                ),
+
+                                frame_width=(
+                                    frame_width
+                                ),
+
+                                frame_height=(
+                                    frame_height
+                                ),
+                            )
+                        )
+
                     selected = (
                         _select_best_candidate(
                             candidates=(
                                 full_candidates
                             ),
+
                             predicted_center=(
                                 predicted_center
                             ),
+
                             expected_size=(
                                 motion.last_size
                             ),
+
                             gate_radius=(
                                 radius * 1.75
                             ),
@@ -1138,126 +1845,411 @@ def track_ball(
                     )
 
                 else:
+
                     selected = (
                         _select_best_candidate(
                             candidates=(
                                 full_candidates
                             ),
+
                             predicted_center=None,
                             expected_size=None,
                             gate_radius=None,
                         )
                     )
 
-            # -----------------------------------------
-            # REAL OBSERVATION
-            # -----------------------------------------
+            # =========================================================
+            # VISUAL / OPTICAL-FLOW TRACKING
+            # =========================================================
+
+            visual_candidate: Optional[
+                BallDetection
+            ] = None
+
+            if (
+                post_strike
+                and optical.active
+            ):
+
+                optical_radius = radius
+
+                if (
+                    optical_radius is None
+                    and motion.initialized
+                ):
+
+                    optical_radius = (
+                        motion.search_radius(
+                            target_frame=(
+                                frame_idx
+                            ),
+
+                            frame_width=(
+                                frame_width
+                            ),
+
+                            frame_height=(
+                                frame_height
+                            ),
+                        )
+                    )
+
+                visual_candidate = (
+                    optical.track(
+                        gray=gray,
+
+                        frame_idx=(
+                            frame_idx
+                        ),
+
+                        timestamp_s=(
+                            timestamp_s
+                        ),
+
+                        frame_width=(
+                            frame_width
+                        ),
+
+                        frame_height=(
+                            frame_height
+                        ),
+
+                        predicted_center=(
+                            predicted_center
+                        ),
+
+                        gate_radius=(
+                            optical_radius
+                        ),
+                    )
+                )
+
+            # =========================================================
+            # CLASSIFY / FUSE THE EVIDENCE
+            # =========================================================
 
             if selected is not None:
 
-                if (
-                    motion.missed_frames
-                    > 0
-                ):
-                    selected.source = (
-                        "reacquired"
-                    )
+                # -----------------------------------------------------
+                # Normal continuous YOLO observation
+                # -----------------------------------------------------
 
-                else:
+                if (
+                    not post_strike
+                    or motion.missed_frames == 0
+                ):
+
                     selected.source = (
                         "detected"
                     )
 
-                motion.add_observation(
-                    selected
-                )
+                    pending.clear()
 
-                trajectory.append(
-                    selected
-                )
-
-            # -----------------------------------------
-            # TEMPORARY PREDICTION
-            # -----------------------------------------
-
-            else:
-
-                if motion.initialized:
-                    motion.mark_missed()
-
-                if (
-                    post_strike
-                    and motion.initialized
-                    and predicted_center
-                    is not None
-                    and motion.missed_frames
-                    <= max_prediction_frames
-                ):
-
-                    px, py = (
-                        predicted_center
+                    motion.add_observation(
+                        selected
                     )
 
-                    # Do not emit nonsense outside
-                    # the actual frame.
-                    if (
-                        0.0
-                        <= px
-                        < frame_width
+                    optical.reset(
+                        gray,
+                        selected,
+                    )
+
+                    trajectory.append(
+                        selected
+                    )
+
+                # -----------------------------------------------------
+                # YOLO found something after a tracking gap
+                # -----------------------------------------------------
+
+                else:
+
+                    association = (
+                        selected.association_score
+                        or 0.0
+                    )
+
+                    strong_reacquisition = (
+                        selected.confidence
+                        >= direct_reacquire_confidence
 
                         and
 
-                        0.0
-                        <= py
-                        < frame_height
+                        association
+                        >= direct_reacquire_score
+                    )
+
+                    # ---------------------------------------------
+                    # Optical flow independently agrees with YOLO.
+                    #
+                    # Two different evidence sources finding nearly
+                    # the same object is strong reacquisition evidence.
+                    # ---------------------------------------------
+
+                    visual_agreement = False
+
+                    if (
+                        visual_candidate
+                        is not None
                     ):
 
-                        previous_size = (
-                            motion.last_size
-                            or 1.0
+                        agreement_distance = (
+                            math.hypot(
+                                selected.center_x
+                                - visual_candidate.center_x,
+
+                                selected.center_y
+                                - visual_candidate.center_y,
+                            )
+                        )
+
+                        ball_scale = max(
+                            selected.bbox_width,
+                            selected.bbox_height,
+
+                            visual_candidate.bbox_width,
+                            visual_candidate.bbox_height,
+
+                            4.0,
+                        )
+
+                        visual_agreement = (
+                            agreement_distance
+                            <= ball_scale * 2.5
+                        )
+
+                    if (
+                        strong_reacquisition
+                        or visual_agreement
+                    ):
+
+                        selected.source = (
+                            "reacquired"
+                        )
+
+                        pending.clear()
+
+                        motion.add_observation(
+                            selected
+                        )
+
+                        optical.reset(
+                            gray,
+                            selected,
                         )
 
                         trajectory.append(
-                            BallDetection(
-                                frame_idx=(
-                                    frame_idx
-                                ),
-
-                                timestamp_s=(
-                                    timestamp_s
-                                ),
-
-                                center_x=px,
-                                center_y=py,
-
-                                center_x_norm=(
-                                    px
-                                    / frame_width
-                                ),
-
-                                center_y_norm=(
-                                    py
-                                    / frame_height
-                                ),
-
-                                bbox_width=(
-                                    previous_size
-                                ),
-
-                                bbox_height=(
-                                    previous_size
-                                ),
-
-                                confidence=(
-                                    motion
-                                    .predicted_confidence()
-                                ),
-
-                                track_id=1,
-
-                                source="predicted",
-                            )
+                            selected
                         )
+
+                    # ---------------------------------------------
+                    # YOLO is weak, but optical flow has a coherent
+                    # actual-pixel track.
+                    #
+                    # Prefer the visual observation rather than
+                    # letting the polynomial predictor determine
+                    # ball position.
+                    # ---------------------------------------------
+
+                    elif (
+                        visual_candidate
+                        is not None
+                    ):
+
+                        pending.clear()
+
+                        motion.add_observation(
+                            visual_candidate
+                        )
+
+                        trajectory.append(
+                            visual_candidate
+                        )
+
+                    # ---------------------------------------------
+                    # Weak YOLO-only candidate
+                    # ---------------------------------------------
+
+                    else:
+
+                        selected.source = (
+                            "tentative"
+                        )
+
+                        trajectory.append(
+                            selected
+                        )
+
+                        if (
+                            pending
+                            and radius
+                            is not None
+                            and _tentatives_consistent(
+                                previous=(
+                                    pending[-1]
+                                ),
+
+                                current=(
+                                    selected
+                                ),
+
+                                gate_radius=(
+                                    radius
+                                ),
+                            )
+                        ):
+
+                            pending.append(
+                                selected
+                            )
+
+                        else:
+
+                            pending = [
+                                selected
+                            ]
+
+                        motion.mark_missed()
+
+                        if (
+                            len(pending)
+                            >= tentative_confirm_frames
+                        ):
+
+                            for confirmed in pending:
+
+                                confirmed.source = (
+                                    "reacquired"
+                                )
+
+                                motion.add_observation(
+                                    confirmed
+                                )
+
+                            # Initialize optical flow from the
+                            # newest confirmed observation.
+                            optical.reset(
+                                gray,
+                                pending[-1],
+                            )
+
+                            pending.clear()
+
+
+            # =========================================================
+            # NO YOLO DETECTION
+            # =========================================================
+
+            else:
+
+                # -----------------------------------------------------
+                # Optical flow still sees coherent pixel motion.
+                #
+                # This is the key new behavior.
+                # -----------------------------------------------------
+
+                if (
+                    visual_candidate
+                    is not None
+                ):
+
+                    pending.clear()
+
+                    motion.add_observation(
+                        visual_candidate
+                    )
+
+                    trajectory.append(
+                        visual_candidate
+                    )
+
+                # -----------------------------------------------------
+                # Neither YOLO nor optical flow can see the ball.
+                # Only NOW do we use motion prediction.
+                # -----------------------------------------------------
+
+                else:
+
+                    pending.clear()
+
+                    if motion.initialized:
+                        motion.mark_missed()
+
+                    if (
+                        post_strike
+                        and motion.initialized
+                        and predicted_center
+                        is not None
+                        and motion.missed_frames
+                        <= max_prediction_frames
+                    ):
+
+                        px, py = (
+                            predicted_center
+                        )
+
+                        if (
+                            0.0
+                            <= px
+                            < frame_width
+
+                            and
+
+                            0.0
+                            <= py
+                            < frame_height
+                        ):
+
+                            previous_size = (
+                                motion.last_size
+                                or 1.0
+                            )
+
+                            trajectory.append(
+                                BallDetection(
+                                    frame_idx=(
+                                        frame_idx
+                                    ),
+
+                                    timestamp_s=(
+                                        timestamp_s
+                                    ),
+
+                                    center_x=px,
+                                    center_y=py,
+
+                                    center_x_norm=(
+                                        px
+                                        / frame_width
+                                    ),
+
+                                    center_y_norm=(
+                                        py
+                                        / frame_height
+                                    ),
+
+                                    bbox_width=(
+                                        previous_size
+                                    ),
+
+                                    bbox_height=(
+                                        previous_size
+                                    ),
+
+                                    confidence=(
+                                        motion
+                                        .predicted_confidence()
+                                    ),
+
+                                    track_id=1,
+
+                                    source=(
+                                        "predicted"
+                                    ),
+
+                                    association_score=None,
+                                )
+                            )
 
             frame_idx += 1
 
@@ -1268,11 +2260,15 @@ def track_ball(
     # SUMMARY
     # =====================================================
 
-    observed = [
+    trusted = [
         detection
         for detection in trajectory
         if detection.source
-        != "predicted"
+        in {
+            "detected",
+            "reacquired",
+            "visual",
+        }
     ]
 
     reacquired_count = sum(
@@ -1282,6 +2278,13 @@ def track_ball(
         == "reacquired"
     )
 
+    tentative_count = sum(
+        1
+        for detection in trajectory
+        if detection.source
+        == "tentative"
+    )
+
     predicted_count = sum(
         1
         for detection in trajectory
@@ -1289,7 +2292,13 @@ def track_ball(
         == "predicted"
     )
 
-    if not observed:
+    longest_prediction_gap = (
+        _longest_prediction_gap(
+            trajectory
+        )
+    )
+
+    if not trusted:
 
         summary = BallTrackSummary(
             detected=False,
@@ -1303,6 +2312,10 @@ def track_ball(
 
             reacquired_count=(
                 reacquired_count
+            ),
+
+            tentative_count=(
+                tentative_count
             ),
 
             predicted_count=(
@@ -1326,6 +2339,10 @@ def track_ball(
                 if trajectory
                 else None
             ),
+
+            longest_prediction_gap=(
+                longest_prediction_gap
+            ),
         )
 
         return BallTrackResult(
@@ -1335,11 +2352,11 @@ def track_ball(
 
     confidences = [
         detection.confidence
-        for detection in observed
+        for detection in trusted
     ]
 
-    first = observed[0]
-    last = observed[-1]
+    first = trusted[0]
+    last = trusted[-1]
 
     summary = BallTrackSummary(
         detected=True,
@@ -1349,11 +2366,11 @@ def track_ball(
         ),
 
         detection_count=(
-            len(observed)
+            len(trusted)
         ),
 
         detection_rate=(
-            len(observed)
+            len(trusted)
             / total_frames
 
             if total_frames
@@ -1362,6 +2379,10 @@ def track_ball(
 
         reacquired_count=(
             reacquired_count
+        ),
+
+        tentative_count=(
+            tentative_count
         ),
 
         predicted_count=(
@@ -1406,6 +2427,10 @@ def track_ball(
             if trajectory
             else last.frame_idx
         ),
+
+        longest_prediction_gap=(
+            longest_prediction_gap
+        ),
     )
 
     return BallTrackResult(
@@ -1415,7 +2440,7 @@ def track_ball(
 
 
 # =========================================================
-# TRAIL VISUALIZATION
+# TRAJECTORY VISUALIZATION
 # =========================================================
 
 
@@ -1443,7 +2468,6 @@ def _draw_dashed_line(
     uy = dy / distance
 
     position = 0.0
-
     draw_segment = True
 
     while position < distance:
@@ -1454,19 +2478,18 @@ def _draw_dashed_line(
         )
 
         if draw_segment:
+
             p1 = (
                 int(
                     round(
                         start[0]
-                        + ux
-                        * position
+                        + ux * position
                     )
                 ),
                 int(
                     round(
                         start[1]
-                        + uy
-                        * position
+                        + uy * position
                     )
                 ),
             )
@@ -1509,16 +2532,6 @@ def draw_ball_trail(
     detections: list[BallDetection],
     strike_frame: Optional[int],
 ) -> None:
-    """
-    Add the post-strike ball trajectory to the
-    already-generated SCAN annotated video.
-
-    Solid yellow:
-        observed / reacquired ball
-
-    Dashed orange:
-        short-horizon prediction only
-    """
 
     if strike_frame is None:
         return
@@ -1579,10 +2592,13 @@ def draw_ball_trail(
 
     writer = cv2.VideoWriter(
         str(temp_output),
+
         cv2.VideoWriter_fourcc(
             *"mp4v"
         ),
+
         fps,
+
         (
             width,
             height,
@@ -1590,6 +2606,7 @@ def draw_ball_trail(
     )
 
     if not writer.isOpened():
+
         cap.release()
 
         raise RuntimeError(
@@ -1615,7 +2632,20 @@ def draw_ball_trail(
         255,
     )
 
+    tentative_color = (
+        255,
+        255,
+        0,
+    )
+
+    visual_color = (
+        255,
+        255,
+        0,
+    )
+
     try:
+
         while True:
 
             ok, frame = cap.read()
@@ -1630,16 +2660,16 @@ def draw_ball_trail(
             )
 
             if current is not None:
+
                 accumulated.append(
                     current
                 )
 
             # -----------------------------------------
-            # Draw all trajectory segments accumulated
-            # up to this point.
+            # Draw accumulated trajectory
             # -----------------------------------------
 
-            for previous, current_point in zip(
+            for previous, next_point in zip(
                 accumulated,
                 accumulated[1:],
             ):
@@ -1660,27 +2690,22 @@ def draw_ball_trail(
                 p2 = (
                     int(
                         round(
-                            current_point.center_x
+                            next_point.center_x
                         )
                     ),
                     int(
                         round(
-                            current_point.center_y
+                            next_point.center_y
                         )
                     ),
                 )
 
-                predicted_segment = (
-                    previous.source
-                    == "predicted"
+                sources = {
+                    previous.source,
+                    next_point.source,
+                }
 
-                    or
-
-                    current_point.source
-                    == "predicted"
-                )
-
-                if predicted_segment:
+                if "predicted" in sources:
 
                     _draw_dashed_line(
                         frame=frame,
@@ -1690,6 +2715,30 @@ def draw_ball_trail(
                             predicted_color
                         ),
                         thickness=2,
+                    )
+
+                elif "tentative" in sources:
+
+                    _draw_dashed_line(
+                        frame=frame,
+                        start=p1,
+                        end=p2,
+                        color=(
+                            tentative_color
+                        ),
+                        thickness=2,
+                        dash_length=6,
+                    )
+
+                elif "visual" in sources:
+
+                    cv2.line(
+                        frame,
+                        p1,
+                        p2,
+                        visual_color,
+                        3,
+                        cv2.LINE_AA,
                     )
 
                 else:
@@ -1704,7 +2753,7 @@ def draw_ball_trail(
                     )
 
             # -----------------------------------------
-            # Current point marker
+            # Current point
             # -----------------------------------------
 
             if current is not None:
@@ -1722,82 +2771,180 @@ def draw_ball_trail(
                     ),
                 )
 
-                if (
-                    current.source
-                    == "predicted"
-                ):
-
-                    cv2.circle(
-                        frame,
-                        center,
-                        5,
-                        predicted_color,
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                    label = "BALL EST"
+                if current.source == "predicted":
 
                     color = (
                         predicted_color
                     )
 
-                else:
-
-                    radius = max(
-                        8,
-                        int(
-                            round(
-                                max(
-                                    current
-                                    .bbox_width,
-
-                                    current
-                                    .bbox_height,
-                                )
-                                / 2
-                            )
-                        ),
+                    label = (
+                        "BALL EST"
                     )
 
                     cv2.circle(
                         frame,
                         center,
-                        radius,
-                        observed_color,
+                        5,
+                        color,
                         2,
                         cv2.LINE_AA,
                     )
 
-                    cv2.circle(
-                        frame,
-                        center,
-                        4,
-                        observed_color,
-                        -1,
-                        cv2.LINE_AA,
+                elif current.source == "tentative":
+
+                    color = (
+                        tentative_color
                     )
 
                     label = (
-                        "BALL"
-                        if current.source
-                        == "detected"
-
-                        else
-                        "BALL REACQUIRED"
+                        "BALL?"
                     )
 
-                    color = (
-                        observed_color
+                    cv2.circle(
+                        frame,
+                        center,
+                        6,
+                        color,
+                        2,
+                        cv2.LINE_AA,
                     )
+
+                else:
+
+                    if current.source == "predicted":
+
+                        color = (
+                            predicted_color
+                        )
+
+                        label = (
+                            "BALL EST"
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            5,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                    elif current.source == "tentative":
+
+                        color = (
+                            tentative_color
+                        )
+
+                        label = (
+                            "BALL?"
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            6,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                    elif current.source == "visual":
+
+                        color = (
+                            visual_color
+                        )
+
+                        label = (
+                            "BALL VISUAL"
+                        )
+
+                        radius = max(
+                            7,
+                            int(
+                                round(
+                                    max(
+                                        current.bbox_width,
+                                        current.bbox_height,
+                                    )
+                                    / 2
+                                )
+                            ),
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            radius,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            3,
+                            color,
+                            -1,
+                            cv2.LINE_AA,
+                        )
+
+                    else:
+
+                        color = (
+                            observed_color
+                        )
+
+                        label = (
+                            "BALL REACQUIRED"
+                            if current.source
+                            == "reacquired"
+
+                            else
+                            "BALL"
+                        )
+
+                        radius = max(
+                            8,
+                            int(
+                                round(
+                                    max(
+                                        current.bbox_width,
+                                        current.bbox_height,
+                                    )
+                                    / 2
+                                )
+                            ),
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            radius,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                        cv2.circle(
+                            frame,
+                            center,
+                            4,
+                            color,
+                            -1,
+                            cv2.LINE_AA,
+                        )
 
                 cv2.putText(
                     frame,
                     label,
+
                     (
                         center[0] + 12,
                         center[1] - 12,
                     ),
+
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.50,
                     color,
@@ -1806,21 +2953,19 @@ def draw_ball_trail(
                 )
 
             if (
-                frame_idx
-                >= strike_frame
-
-                and len(
-                    accumulated
-                ) >= 2
+                frame_idx >= strike_frame
+                and len(accumulated) >= 2
             ):
 
                 cv2.putText(
                     frame,
                     "SHOT TRAJECTORY",
+
                     (
                         18,
                         height - 25,
                     ),
+
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.60,
                     observed_color,
@@ -1835,19 +2980,17 @@ def draw_ball_trail(
             frame_idx += 1
 
     finally:
+
         cap.release()
         writer.release()
 
-    # Browser-compatible H.264.
     subprocess.run(
         [
             "ffmpeg",
             "-y",
 
             "-i",
-            str(
-                temp_output
-            ),
+            str(temp_output),
 
             "-c:v",
             "libx264",
@@ -1860,9 +3003,7 @@ def draw_ball_trail(
 
             "-an",
 
-            str(
-                video_path
-            ),
+            str(video_path),
         ],
         check=True,
     )
@@ -1873,18 +3014,15 @@ def draw_ball_trail(
 
 
 # =========================================================
-# CLI TEST
+# CLI
 # =========================================================
 
 
 def main() -> None:
 
-    parser = (
-        argparse.ArgumentParser(
-            description=(
-                "SCAN motion-aware "
-                "soccer-ball tracker"
-            )
+    parser = argparse.ArgumentParser(
+        description=(
+            "SCAN validated soccer-ball tracker"
         )
     )
 
@@ -1907,15 +3045,18 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.video.exists():
+
         raise FileNotFoundError(
             args.video
         )
 
     result = track_ball(
         video_path=args.video,
+
         strike_frame=(
             args.strike_frame
         ),
+
         model_name=args.model,
     )
 
