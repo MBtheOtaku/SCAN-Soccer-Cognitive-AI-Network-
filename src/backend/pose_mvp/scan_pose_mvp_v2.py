@@ -36,7 +36,11 @@ import subprocess
 import random 
 
 from src.backend.jev_judgements import (
-    run_jev_judgments,
+    run_jev_judgements,
+)
+
+from src.backend.coaching_report import (
+    build_coaching_report,
 )
 
 # Load MediaPipe dynamically so static analysis does not require its optional
@@ -1038,10 +1042,10 @@ def analyze(
     )
 
     # ---------------------------------------------------------
-    # Jev shadow judgments
+    # Jev shadow judgements
     # ---------------------------------------------------------
 
-    jev_result = run_jev_judgments(
+    jev_result = run_jev_judgements(
         situated_state=(
             situated_state
         ),
@@ -1053,6 +1057,12 @@ def analyze(
         goal_tracking=(
             goal_outcome.to_dict()
         ),
+    )
+
+    coaching_report = build_coaching_report(
+        situated_state=situated_state,
+        jev_result=jev_result,
+        shot_summary=summary,
     )
 
     print(
@@ -1084,8 +1094,12 @@ def analyze(
         situated_state.to_dict()
     )
 
-    analysis_payload["jev_judgments"] = (
+    analysis_payload["jev_judgements"] = (
         jev_result.to_dict()
+    )
+
+    analysis_payload["coaching_report"] = (
+        coaching_report.to_dict()
     )
 
     json_path.write_text(

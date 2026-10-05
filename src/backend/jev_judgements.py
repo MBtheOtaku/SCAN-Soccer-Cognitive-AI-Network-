@@ -27,11 +27,11 @@ DEFAULT_JEV_MODEL = "jev-latest"
 
 
 @dataclass
-class JevJudgmentResult:
+class JevJudgementResult:
     """
     Shadow-mode Jev result.
 
-    These judgments are logged for inspection only.
+    These judgements are logged for inspection only.
 
     They do NOT currently:
     - override the SCAN controller
@@ -240,7 +240,7 @@ def _build_questions(
     dict[str, str],
 ]:
     """
-    Construct narrow typed judgments.
+    Construct narrow typed judgements.
 
     Some questions are omitted when SCAN does not
     actually have the evidence required to answer them.
@@ -467,7 +467,7 @@ def _build_questions(
 # =========================================================
 
 
-def run_jev_judgments(
+def run_jev_judgements(
     situated_state: SituatedState,
 
     ball_tracking: Optional[
@@ -483,7 +483,7 @@ def run_jev_judgments(
     model: Optional[str] = None,
 
     timeout_s: float = 5.0,
-) -> JevJudgmentResult:
+) -> JevJudgementResult:
     """
     Run Jev in SHADOW MODE.
 
@@ -512,7 +512,7 @@ def run_jev_judgments(
 
     if not api_key:
 
-        return JevJudgmentResult(
+        return JevJudgementResult(
             status="skipped",
 
             shadow_mode=True,
@@ -613,7 +613,7 @@ def run_jev_judgments(
             response_body
         )
 
-        return JevJudgmentResult(
+        return JevJudgementResult(
             status="ok",
 
             shadow_mode=True,
@@ -657,7 +657,7 @@ def run_jev_judgments(
                 str(exc)
             )
 
-        return JevJudgmentResult(
+        return JevJudgementResult(
             status="error",
 
             shadow_mode=True,
@@ -685,7 +685,7 @@ def run_jev_judgments(
 
     except URLError as exc:
 
-        return JevJudgmentResult(
+        return JevJudgementResult(
             status="error",
 
             shadow_mode=True,
@@ -712,7 +712,7 @@ def run_jev_judgments(
 
     except Exception as exc:
 
-        return JevJudgmentResult(
+        return JevJudgementResult(
             status="error",
 
             shadow_mode=True,

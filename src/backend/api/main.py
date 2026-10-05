@@ -2,6 +2,7 @@ from dataclasses import asdict
 from pathlib import Path
 import shutil
 import uuid
+import json
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -186,13 +187,44 @@ async def analyze_video(
         )
 
     # -----------------------------------------------------
+    # Load full SCAN analysis JSON
+    # -----------------------------------------------------
+
+    try:
+        analysis_data = json.loads(
+            json_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not load SCAN analysis JSON: {exc}",
+        )
+
+    # -----------------------------------------------------
     # API response
     # -----------------------------------------------------
 
     return {
         "analysis_id": analysis_id,
         "filename": video.filename,
+
         "summary": asdict(summary),
+
+        "coaching_report": (
+            analysis_data.get(
+                "coaching_report"
+            )
+        ),
+
+        "jev_judgements": (
+            analysis_data.get(
+                "jev_judgements"
+            )
+        ),
+
         "artifacts": {
             "annotated_video": (
                 f"/outputs/{analysis_id}/scan_annotated_v2.mp4"
