@@ -35,6 +35,10 @@ import numpy as np
 import subprocess
 import random 
 
+from src.backend.jev_judgements import (
+    run_jev_judgments,
+)
+
 # Load MediaPipe dynamically so static analysis does not require its optional
 # package metadata to be installed in the editor's Python environment.
 mp = importlib.import_module("mediapipe")
@@ -1034,6 +1038,30 @@ def analyze(
     )
 
     # ---------------------------------------------------------
+    # Jev shadow judgments
+    # ---------------------------------------------------------
+
+    jev_result = run_jev_judgments(
+        situated_state=(
+            situated_state
+        ),
+
+        ball_tracking=(
+            ball_summary.to_dict()
+        ),
+
+        goal_tracking=(
+            goal_outcome.to_dict()
+        ),
+    )
+
+    print(
+        "Jev shadow mode: "
+        f"status={jev_result.status}, "
+        f"model={jev_result.model}"
+    )
+
+    # ---------------------------------------------------------
     # Combined analysis payload
     # ---------------------------------------------------------
 
@@ -1054,6 +1082,10 @@ def analyze(
 
     analysis_payload["situated_state"] = (
         situated_state.to_dict()
+    )
+
+    analysis_payload["jev_judgments"] = (
+        jev_result.to_dict()
     )
 
     json_path.write_text(
