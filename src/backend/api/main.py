@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import uuid
 import json
+import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,7 +50,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-    ],
+    ] + [origin.strip() for origin in os.getenv("SCAN_CORS_ORIGINS", "").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,6 +113,7 @@ async def analyze_video(
         ".avi",
         ".mkv",
         ".m4v",
+        ".webm",
     }
 
     suffix = Path(video.filename or "").suffix.lower()

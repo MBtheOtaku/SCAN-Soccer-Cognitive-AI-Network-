@@ -1,5 +1,8 @@
 # SCAN Pose MVP v2 — first real shooting clip
 
+Live Session v0.1: see [phone setup and testing](docs/live-session.md) for camera
+recording, configurable API URLs, trusted HTTPS and server start commands.
+
 This version is tuned for the first SCAN test clip: a fixed 1280x720 side-angle shooting video.
 It crops the pose model to the player region, draws the skeleton back onto the original frame,
 computes simple pose features, estimates the probable striking leg/moment using ankle motion

@@ -8,7 +8,7 @@ const preferredBritishVoices = [
 ];
 
 function findBritishVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined") {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
     return null;
   }
 
@@ -143,7 +143,7 @@ export function getStartupGreeting(): string {
 // ---------------------------------------------------------
 
 export function initializeSpeech() {
-  if (typeof window === "undefined") {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
     return;
   }
 
@@ -207,7 +207,7 @@ export function speak(
 // ---------------------------------------------------------
 
 export function stopSpeaking() {
-  if (typeof window !== "undefined") {
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
     window.speechSynthesis.cancel();
   }
 }
