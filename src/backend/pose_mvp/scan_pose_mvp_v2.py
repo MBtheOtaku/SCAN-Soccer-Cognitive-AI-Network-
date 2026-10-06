@@ -43,6 +43,9 @@ from src.backend.coaching_report import (
     build_coaching_report,
 )
 
+from src.backend.llm_coaching import (
+    refine_coaching_report_with_llm,
+)
 # Load MediaPipe dynamically so static analysis does not require its optional
 # package metadata to be installed in the editor's Python environment.
 mp = importlib.import_module("mediapipe")
@@ -1059,10 +1062,25 @@ def analyze(
         ),
     )
 
-    coaching_report = build_coaching_report(
+    deterministic_coaching_report = build_coaching_report(
         situated_state=situated_state,
         jev_result=jev_result,
         shot_summary=summary,
+    )
+
+    coaching_report, coaching_synthesis = (
+        refine_coaching_report_with_llm(
+            situated_state=situated_state,
+            jev_judgements=jev_result.to_dict(),
+            deterministic_report=deterministic_coaching_report,
+        )
+    )
+
+    print(
+        "Coaching synthesis: "
+        f"status={coaching_synthesis['status']}, "
+        f"model={coaching_synthesis['model']}, "
+        f"used_llm={coaching_synthesis['used_llm']}"
     )
 
     print(
@@ -1100,6 +1118,10 @@ def analyze(
 
     analysis_payload["coaching_report"] = (
         coaching_report.to_dict()
+    )
+
+    analysis_payload["coaching_synthesis"] = (
+        coaching_synthesis
     )
 
     json_path.write_text(
