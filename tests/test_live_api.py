@@ -67,6 +67,8 @@ def test_cors_uses_explicit_origins(api):
     origins = module.app.user_middleware[0].kwargs["allow_origins"]
     assert "http://localhost:3000" in origins
     assert "http://127.0.0.1:3000" in origins
+    assert "https://localhost:3000" in origins
+    assert "https://127.0.0.1:3000" in origins
     assert "https://192.168.1.50:3000" in origins
     assert "https://scan.example" in origins
     assert "*" not in origins

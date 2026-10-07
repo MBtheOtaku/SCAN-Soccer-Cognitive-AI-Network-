@@ -75,7 +75,13 @@ The bare `--experimental-https` flag generates a localhost certificate; it alone
 does not establish trust on a phone or cover the laptop's LAN IP. With HTTPS tunnels,
 set `NEXT_PUBLIC_API_BASE` to the API tunnel URL and `SCAN_CORS_ORIGINS` to the exact
 frontend tunnel origin. CORS accepts comma-separated additional origins, without a
-trailing slash, and keeps the existing localhost defaults. There is no wildcard.
+trailing slash, and keeps HTTP and HTTPS localhost defaults. There is no wildcard.
+For simultaneous laptop/phone testing, use the same LAN HTTPS frontend URL on both
+devices. Both upload and Live Session share `NEXT_PUBLIC_API_BASE` and `/analyze`.
+If upload shows a fetch error, first open the configured API's `/health` URL in the
+same browser, verify its certificate is trusted and check the frontend origin is
+allowed by backend CORS. HTTPS frontends require an HTTPS API URL; the HTTP local
+fallback is intended for the original HTTP-only laptop setup.
 The backend has no authentication: use a trusted development network; public tunnels
 expose the analysis service and generated outputs unless access controls are added.
 

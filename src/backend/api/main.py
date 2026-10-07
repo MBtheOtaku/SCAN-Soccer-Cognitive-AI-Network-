@@ -50,6 +50,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://localhost:3000",
+        "https://127.0.0.1:3000",
     ] + [origin.strip() for origin in os.getenv("SCAN_CORS_ORIGINS", "").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
