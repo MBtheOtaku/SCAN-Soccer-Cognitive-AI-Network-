@@ -48,6 +48,10 @@ For a local certificate setup:
 
    This is the API URL only. Never prefix OpenAI or TypeSafe secrets with
    `NEXT_PUBLIC_`. Restart Next after changing this value; production builds embed it.
+   Next's development JavaScript allowlist automatically includes this API hostname
+   for the same-laptop setup. If the frontend uses a different hostname (for example
+   a separate HTTPS tunnel), set `SCAN_DEV_HOSTS` to that frontend hostname before
+   starting Next. This accepts comma-separated hostnames, without schemes or ports.
 4. Start the backend from the repository root, substituting your IP and absolute
    certificate/key paths:
 
@@ -76,6 +80,12 @@ The backend has no authentication: use a trusted development network; public tun
 expose the analysis service and generated outputs unless access controls are added.
 
 ## Behaviour and checks
+
+- OPEN LIVE SESSION should change to CLOSE LIVE SESSION and reveal ENABLE CAMERA.
+  Camera permission is requested only after ENABLE CAMERA. If OPEN never changes,
+  check the frontend terminal for blocked dev asset requests, set `SCAN_DEV_HOSTS`
+  to the hostname you open on the phone, restart Next, then reload Safari. For the
+  LAN example: `$env:SCAN_DEV_HOSTS="192.168.1.50"` in PowerShell.
 
 - Rear camera is preferred; recording uses video only and negotiates MP4/WebM.
   The backend now accepts WebM; decoding still uses its existing OpenCV installation.
