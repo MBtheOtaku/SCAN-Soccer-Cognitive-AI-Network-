@@ -1,5 +1,8 @@
 # Live Session v0.1
 
+Optional post-rep opponent-pressure review and a Bluetooth speaker goal beacon are
+documented in [the pressure/beacon prototype guide](opponent-pressure.md).
+
 Upload-video analysis and Session Report remain available. Live Session uses the same
 `POST /analyze` endpoint, with no streaming or on-device ML. Enable the camera, position
 the phone with the player's full movement visible, then press START REP. Recording

@@ -1,10 +1,11 @@
-import type { AnalysisResponse } from "./analysis";
+import type { AnalysisResponse, AthleteSide } from "./analysis";
 
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
-export async function analyzeVideo(video: File, signal?: AbortSignal): Promise<AnalysisResponse> {
+export async function analyzeVideo(video: File, signal?: AbortSignal, athleteSide: AthleteSide = ""): Promise<AnalysisResponse> {
   const form = new FormData();
   form.append("video", video);
+  if (athleteSide) form.append("athlete_start_side", athleteSide);
   const response = await fetch(`${API_BASE}/analyze`, { method: "POST", body: form, signal });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
@@ -17,6 +18,11 @@ export async function analyzeVideo(video: File, signal?: AbortSignal): Promise<A
 }
 
 export function spokenCue(result: AnalysisResponse): string {
+  // The controller selects one supported pressure cue after the rep, without
+  // queuing another technique cue over it. Existing behaviour remains otherwise.
+  if (result.pressure_report?.policy.should_speak && result.pressure_report.spoken_cue) {
+    return result.pressure_report.spoken_cue;
+  }
   // An explicit null/empty cue in an existing report means policy chose silence.
   if (result.coaching_report) return result.coaching_report.spoken_cue ?? "";
   return result.summary.prototype_feedback?.replace(/^Prototype cue:\s*/i, "") ?? "";

@@ -72,3 +72,28 @@ def test_cors_uses_explicit_origins(api):
     assert "https://192.168.1.50:3000" in origins
     assert "https://scan.example" in origins
     assert "*" not in origins
+
+
+def test_pressure_failure_preserves_completed_analysis(api, monkeypatch):
+    module, calls = api
+    from src.backend import opponent_pressure
+
+    def fail(*args):
+        raise RuntimeError("optional detector unavailable")
+
+    monkeypatch.setattr(opponent_pressure, "analyze_pressure", fail)
+    upload = UploadFile(filename="rep.mp4", file=io.BytesIO(b"clip bytes"))
+    result = asyncio.run(module.analyze_video(upload, roi=None, athlete_start_side="right"))
+    assert calls
+    assert result["coaching_report"]["spoken_cue"] is None
+    assert result["pressure_report"]["status"] == "unavailable"
+    assert not result["pressure_report"]["policy"]["should_speak"]
+
+
+def test_invalid_pressure_setup_rejected_before_analysis(api):
+    module, calls = api
+    upload = UploadFile(filename="rep.mp4", file=io.BytesIO(b"clip bytes"))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(module.analyze_video(upload, roi=None, athlete_start_side="middle"))
+    assert error.value.status_code == 400
+    assert not calls

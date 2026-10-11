@@ -97,6 +97,7 @@ def health_check():
 async def analyze_video(
     video: UploadFile = File(...),
     roi: str | None = Form(default=None),
+    athlete_start_side: str | None = Form(default=None),
 ):
     """
     Upload a soccer drill video and run the current
@@ -108,6 +109,12 @@ async def analyze_video(
     Example for IMG_5702.mov:
         540,280,1180,650
     """
+
+    # Validate optional setup before saving or running the existing pipeline.
+    if not isinstance(athlete_start_side, str):
+        athlete_start_side = None
+    if athlete_start_side not in {None, "left", "right"}:
+        raise HTTPException(status_code=400, detail="athlete_start_side must be left or right.")
 
     allowed_extensions = {
         ".mp4",
@@ -211,9 +218,30 @@ async def analyze_video(
     # API response
     # -----------------------------------------------------
 
+    pressure_report = None
+    if athlete_start_side:
+        try:
+            from src.backend.opponent_pressure import analyze_pressure
+            from src.backend.pressure_report import build_pressure_report
+            evidence = await run_in_threadpool(
+                analyze_pressure, input_path, athlete_start_side, PROJECT_ROOT / "yolo26n.pt"
+            )
+            pressure_report = build_pressure_report(evidence)
+        except Exception:
+            # Optional contextual analysis must never break a completed SCAN report.
+            pressure_report = {
+                "status": "unavailable", "events": [],
+                "assessment": "Opponent-pressure assessment is unavailable; technique analysis completed normally.",
+                "confidence_note": "No pressure or safe escape direction was established.",
+                "next_rep_recommendation": "Retry with both players visible and the local person detector available.",
+                "spoken_cue": None,
+                "policy": {"decision_type": "silence_default", "should_speak": False},
+            }
+
     return {
         "analysis_id": analysis_id,
         "filename": video.filename,
+        "pressure_report": pressure_report,
 
         "summary": asdict(summary),
 

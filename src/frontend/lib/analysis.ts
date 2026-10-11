@@ -28,10 +28,22 @@ export interface AnalysisResponse {
   filename: string;
   summary: ScanSummary;
   coaching_report: CoachingReport | null;
+  pressure_report?: PressureReport | null;
   artifacts: {
     annotated_video: string;
     metrics_csv: string;
     shot_summary: string;
   };
+}
+
+export type AthleteSide = "" | "left" | "right";
+export interface PressureReport {
+  status: string;
+  assessment: string;
+  next_rep_recommendation: string;
+  confidence_note: string;
+  spoken_cue: string | null;
+  policy: { decision_type: string; should_speak: boolean };
+  events: { start_s: number; end_s: number; camera_side: string; closing_rate_body_heights_per_s: number }[];
 }
 

@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env
 data/raw/
+data/reference-review/
 *.mp4
 *.mov
 .DS_Store

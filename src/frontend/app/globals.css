@@ -1079,3 +1079,10 @@ body {
 .live-preview { width: 100%; max-height: 480px; background: #080d0a; object-fit: contain; border-radius: 8px; }
 .live-controls { display: flex; flex-wrap: wrap; gap: 12px; }
 .live-session button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.pressure-setup { display: grid; gap: 10px; width: min(640px, 100%); margin: 20px 0; font-size: 13px; }
+.pressure-setup select { padding: 12px; color: var(--text); background: #0b170e; border: 1px solid var(--panel-border); border-radius: 5px; }
+.pressure-setup small, .pressure-note, .goal-beacon p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.pressure-feedback { padding: 22px; margin: 20px 0; }
+.pressure-feedback p { line-height: 1.6; margin: 14px 0; }
+.goal-beacon { margin: 20px 0; }

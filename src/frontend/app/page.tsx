@@ -9,8 +9,9 @@ import {
 } from "../lib/speech";
 
 import { API_BASE, analyzeVideo, spokenCue } from "../lib/api";
-import type { AnalysisResponse } from "../lib/analysis";
+import type { AnalysisResponse, AthleteSide } from "../lib/analysis";
 import LiveSession from "../components/LiveSession";
+import PressureFeedback, { PressureSetup } from "../components/PressureFeedback";
 
 const processingStages = [
   "VIDEO INGESTED",
@@ -28,6 +29,7 @@ export default function Home() {
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [athleteSide, setAthleteSide] = useState<AthleteSide>("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hasWelcomed = useRef(false);
@@ -53,6 +55,7 @@ export default function Home() {
     const file = event.target.files?.[0] ?? null;
 
     setSelectedFile(file);
+    setAthleteSide("");
     setResult(null);
     setError(null);
 
@@ -94,7 +97,7 @@ export default function Home() {
     }, 900);
 
     try {
-      const data = await analyzeVideo(selectedFile);
+      const data = await analyzeVideo(selectedFile, undefined, athleteSide);
 
       setActiveStage(processingStages.length - 1);
 
@@ -324,6 +327,8 @@ export default function Home() {
             </div>
           </div>
 
+          <PressureFeedback report={result.pressure_report} />
+
           {/* Feedback */}
           <div className="feedback-panel">
             <div className="feedback-header">
@@ -469,6 +474,7 @@ export default function Home() {
             )}
           </div>
 
+          <PressureSetup value={athleteSide} onChange={setAthleteSide} />
           <button
             className="analyze-button"
             disabled={!selectedFile}

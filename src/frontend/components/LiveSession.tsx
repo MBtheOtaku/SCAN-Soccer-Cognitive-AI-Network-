@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { analyzeVideo, spokenCue } from "../lib/api";
-import type { AnalysisResponse } from "../lib/analysis";
+import type { AnalysisResponse, AthleteSide } from "../lib/analysis";
 import { speak, stopSpeaking } from "../lib/speech";
+import PressureFeedback, { PressureSetup } from "./PressureFeedback";
+import GoalBeacon from "./GoalBeacon";
+import { stopBeacon } from "../lib/beacon";
 
 type Phase = "READY" | "RECORDING" | "ANALYZING" | "REP COMPLETE";
 const REP_MS = 4500;
@@ -17,6 +20,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [reps, setReps] = useState(0);
+  const [athleteSide, setAthleteSide] = useState<AthleteSide>("");
   const preview = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -29,6 +33,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
   useEffect(() => { voice.current = voiceEnabled; }, [voiceEnabled]);
 
   function release() {
+    stopBeacon();
     generation.current += 1;
     if (timer.current) clearTimeout(timer.current);
     request.current?.abort();
@@ -90,6 +95,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
     if (busy.current || !stream.current || !cameraReady) return;
     busy.current = true;
     stopSpeaking();
+    stopBeacon();
     setError(null);
     const token = generation.current;
     const chunks: Blob[] = [];
@@ -120,7 +126,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
           const blob = new Blob(chunks, { type: recording.mimeType });
           if (!blob.size) throw new Error("The camera returned an empty clip. Please retry.");
           const extension = recording.mimeType.includes("mp4") ? "mp4" : "webm";
-          const analysis = await analyzeVideo(new File([blob], `rep-${Date.now()}.${extension}`, { type: blob.type }), controller.signal);
+          const analysis = await analyzeVideo(new File([blob], `rep-${Date.now()}.${extension}`, { type: blob.type }), controller.signal, athleteSide);
           if (token !== generation.current) return;
           setResult(analysis);
           setReps((count) => count + 1);
@@ -158,12 +164,15 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
         <h2 className="panel-label">LIVE SESSION v0.1</h2>
         <p>Place your phone where your full movement is visible. START REP records 4.5 seconds, then analyses the clip on your laptop. Keep this page visible.</p>
         <video ref={preview} className="live-preview" autoPlay muted playsInline aria-label="Live camera preview" />
+        <PressureSetup value={athleteSide} onChange={setAthleteSide} disabled={phase !== "READY"} />
+        <GoalBeacon ready={cameraReady && phase === "READY"} voiceEnabled={voiceEnabled} />
         <p role="status" aria-live="polite">{connecting ? "REQUESTING CAMERA" : !cameraReady ? "CAMERA OFF" : phase} · {reps} reps complete</p>
         <div className="live-controls">
           {!cameraReady && <button className="secondary-button" disabled={connecting} onClick={enableCamera}>ENABLE CAMERA</button>}
           <button className="secondary-button" disabled={!cameraReady || phase !== "READY"} onClick={startRep}>START REP</button>
         </div>
         {error && <div className="analysis-error" role="alert">{error}</div>}
+        <PressureFeedback report={result?.pressure_report} />
         {result && <div className="feedback-panel">
           <div className="panel-label">LAST REP · {result.analysis_id}</div>
           {result.coaching_report ? <>

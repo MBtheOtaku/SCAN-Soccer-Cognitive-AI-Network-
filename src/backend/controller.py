@@ -16,10 +16,23 @@ can pass to the LLM feedback module to phrase as natural language.
 from dataclasses import dataclass
 from typing import Optional
 
-from player_state import PlayerState, RepFeatures
+try:
+    from .player_state import PlayerState, RepFeatures
+except ImportError:  # Preserve the existing standalone controller entry point.
+    from player_state import PlayerState, RepFeatures
 
 MIN_SECONDS_BETWEEN_INTERVENTIONS = 8.0
 REPEATED_ERROR_THRESHOLD = 2
+
+
+def decide_pressure(evidence: dict, *, mid_action: bool = False) -> dict:
+    """Post-rep training policy. Closing pressure is not a verified safety hazard."""
+    supported = evidence.get("status") == "observed" and bool(evidence.get("events"))
+    return {
+        "decision_type": "pressure_assessment" if supported else "silence_default",
+        "should_speak": supported and not mid_action,
+        "reason": "Review supported closing pressure after the rep." if supported else "No supported closing-pressure cue.",
+    }
 
 
 @dataclass
