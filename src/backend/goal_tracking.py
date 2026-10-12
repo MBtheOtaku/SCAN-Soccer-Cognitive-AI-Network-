@@ -34,6 +34,7 @@ class GoalCalibration:
     top_right: tuple[float, float]
     bottom_right: tuple[float, float]
     bottom_left: tuple[float, float]
+    reference_frame: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -48,6 +49,7 @@ class GoalCalibration:
             top_right=tuple(data["top_right"]),
             bottom_right=tuple(data["bottom_right"]),
             bottom_left=tuple(data["bottom_left"]),
+            reference_frame=int(data.get("reference_frame", 0)),
         )
 
     @classmethod
@@ -375,6 +377,7 @@ def analyze_goal_outcome(
     # one video.
     max_observation_gap_frames: int = 4,
     min_entry_confidence: float = 0.35,
+    frame_calibrations: Optional[dict[int, Optional[GoalCalibration]]] = None,
 ) -> GoalOutcome:
     """
     Detect an OBSERVED trajectory crossing into
@@ -504,17 +507,29 @@ def analyze_goal_outcome(
         ):
             continue
 
+        previous_transform = current_transform = transform
+        if frame_calibrations is not None:
+            # Never bridge a lost goal track or use a frozen polygon as evidence.
+            if any(frame_calibrations.get(i) is None for i in range(previous.frame_idx, current.frame_idx + 1)):
+                continue
+            previous_transform = cv2.getPerspectiveTransform(
+                frame_calibrations[previous.frame_idx].pixel_points(frame_width, frame_height), destination
+            )
+            current_transform = cv2.getPerspectiveTransform(
+                frame_calibrations[current.frame_idx].pixel_points(frame_width, frame_height), destination
+            )
+
         previous_goal = (
             _goal_coordinates(
                 previous,
-                transform,
+                previous_transform,
             )
         )
 
         current_goal = (
             _goal_coordinates(
                 current,
-                transform,
+                current_transform,
             )
         )
 
@@ -665,7 +680,9 @@ def analyze_goal_outcome(
     return GoalOutcome(
         goal_calibrated=True,
 
-        goal_entry_detected=False,
+        goal_entry_detected=(None if frame_calibrations is not None and any(
+            frame_calibrations.get(i) is None for i in range(trusted[0].frame_idx, trusted[-1].frame_idx + 1)
+        ) else False),
 
         shot_on_target=None,
 
@@ -905,6 +922,7 @@ def calibrate_goal(
         top_right=normalized[1],
         bottom_right=normalized[2],
         bottom_left=normalized[3],
+        reference_frame=frame_index,
     )
 
     calibration.save(

@@ -733,11 +733,24 @@ def analyze(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    from src.backend.goal_motion import GoalMotionTracker
+    goal_tracker = None
+    goal_frames = {}
     goal_calibration = None
     goal_calibration_path = Path("data/goal_calibration.json")
 
     if goal_calibration_path.exists():
         goal_calibration = GoalCalibration.load(goal_calibration_path)
+        reference_capture = cv2.VideoCapture(str(video))
+        try:
+            reference_capture.set(cv2.CAP_PROP_POS_FRAMES, goal_calibration.reference_frame)
+            reference_ok, reference = reference_capture.read()
+            if reference_ok:
+                goal_tracker = GoalMotionTracker(reference, goal_calibration)
+        except (cv2.error, ValueError) as exc:
+            print(f"Goal motion tracking unavailable: {exc}")
+        finally:
+            reference_capture.release()
 
     # ---------------------------------------------------------
     # ROI calibration
@@ -848,6 +861,10 @@ def analyze(
                 if not ok:
                     break
 
+                # Observe raw pixels before drawing pose/HUD graphics.
+                current_goal = goal_tracker.update(frame, frame_idx) if goal_tracker else None
+                goal_frames[frame_idx] = current_goal
+
                 crop = frame[
                     roi.y1:roi.y2,
                     roi.x1:roi.x2,
@@ -899,8 +916,10 @@ def analyze(
                     roi,
                 )
 
-                if goal_calibration is not None:
-                    draw_goal_overlay(frame, goal_calibration)
+                if current_goal is not None:
+                    draw_goal_overlay(frame, current_goal)
+                elif goal_calibration is not None:
+                    cv2.putText(frame, "GOAL TRACKING UNCERTAIN", (20, height - 25), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 180, 255), 2)
 
                 writer.write(frame)
 
@@ -967,17 +986,8 @@ def analyze(
     # Goal analysis
     # ---------------------------------------------------------
 
-    goal_calibration_path = Path(
-        "data/goal_calibration.json"
-    )
-
-    if goal_calibration_path.exists():
-
-        goal_calibration = (
-            GoalCalibration.load(
-                goal_calibration_path
-            )
-        )
+    # Use the same initial calibration snapshot as the per-frame overlay.
+    if goal_calibration is not None:
 
         goal_outcome = (
             analyze_goal_outcome(
@@ -995,6 +1005,7 @@ def analyze(
 
                 frame_width=width,
                 frame_height=height,
+                frame_calibrations=goal_frames,
             )
         )
 
@@ -1107,6 +1118,7 @@ def analyze(
     analysis_payload["goal_tracking"] = (
         goal_outcome.to_dict()
     )
+    analysis_payload["goal_motion"] = goal_tracker.summary() if goal_tracker else {"mode": "unavailable"}
 
     analysis_payload["situated_state"] = (
         situated_state.to_dict()
