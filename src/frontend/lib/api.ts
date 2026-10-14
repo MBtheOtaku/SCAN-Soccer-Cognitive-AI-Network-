@@ -1,11 +1,13 @@
-import type { AnalysisResponse, AthleteSide } from "./analysis";
+import type { AnalysisResponse, AthleteSide, GoalSetupValue } from "./analysis";
 
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
-export async function analyzeVideo(video: File, signal?: AbortSignal, athleteSide: AthleteSide = ""): Promise<AnalysisResponse> {
+export async function analyzeVideo(video: File, signal?: AbortSignal, athleteSide: AthleteSide = "", goal: GoalSetupValue | null = null): Promise<AnalysisResponse> {
   const form = new FormData();
   form.append("video", video);
   if (athleteSide) form.append("athlete_start_side", athleteSide);
+  form.append("goal_setup", goal ? JSON.stringify({ confirmed: true, corners: goal.corners }) : "null");
+  if (goal) form.append("goal_reference", goal.reference, "goal-reference.jpg");
   const response = await fetch(`${API_BASE}/analyze`, { method: "POST", body: form, signal });
   const data = await response.json().catch(() => null);
   if (!response.ok) {

@@ -24,6 +24,7 @@ interface CoachingReport {
 }
 
 export interface AnalysisResponse {
+  goal_motion?: { valid_frames?: number; lost_frames?: number } | null;
   analysis_id: string;
   filename: string;
   summary: ScanSummary;
@@ -35,6 +36,9 @@ export interface AnalysisResponse {
     shot_summary: string;
   };
 }
+
+export type GoalPoint = [number, number];
+export type GoalSetupValue = { corners: GoalPoint[]; reference: Blob };
 
 export type AthleteSide = "" | "left" | "right";
 export interface PressureReport {

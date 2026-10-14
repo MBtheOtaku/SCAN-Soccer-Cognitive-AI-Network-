@@ -93,11 +93,29 @@ def health_check():
 # Video analysis
 # ---------------------------------------------------------
 
+@app.post("/goals/propose")
+async def propose_goal(frame: UploadFile = File(...)):
+    from src.backend.goal_setup import decode_reference
+    from src.backend.goal_proposal import propose_goals
+    try:
+        contents = await frame.read(5_000_001)
+        image = decode_reference(contents)
+        candidates = await run_in_threadpool(propose_goals, image)
+        return {"candidates": candidates, "requires_confirmation": True,
+                "note": "Prototype goal-frame geometry proposals. Confirm or adjust all corners; scores are not probabilities."}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        await frame.close()
+
+
 @app.post("/analyze")
 async def analyze_video(
     video: UploadFile = File(...),
     roi: str | None = Form(default=None),
     athlete_start_side: str | None = Form(default=None),
+    goal_setup: str | None = Form(default=None),
+    goal_reference: UploadFile | None = File(default=None),
 ):
     """
     Upload a soccer drill video and run the current
@@ -111,6 +129,20 @@ async def analyze_video(
     """
 
     # Validate optional setup before saving or running the existing pipeline.
+    from src.backend.goal_setup import parse_goal_setup, decode_reference
+    reference_contents = None
+    try:
+        calibration = parse_goal_setup(goal_setup if isinstance(goal_setup, str) else None)
+        if calibration:
+            if goal_reference is None or not hasattr(goal_reference, "read"):
+                raise ValueError("A confirmed goal requires its reference photo.")
+            reference_contents = await goal_reference.read(5_000_001)
+            decode_reference(reference_contents)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid goal setup: {exc}")
+    finally:
+        if goal_reference is not None and hasattr(goal_reference, "close"):
+            await goal_reference.close()
     if not isinstance(athlete_start_side, str):
         athlete_start_side = None
     if athlete_start_side not in {None, "left", "right"}:
@@ -181,6 +213,10 @@ async def analyze_video(
     # -----------------------------------------------------
 
     try:
+        reference_path = None
+        if reference_contents:
+            reference_path = analysis_output_dir / "goal_reference.jpg"
+            reference_path.write_bytes(reference_contents)
         summary = await run_in_threadpool(
             analyze,
             input_path,
@@ -189,6 +225,9 @@ async def analyze_video(
             csv_path,
             json_path,
             roi,
+            goal_calibration_override=calibration,
+            use_legacy_goal_calibration=False,
+            goal_reference_path=reference_path,
         )
 
     except Exception as exc:
@@ -242,6 +281,8 @@ async def analyze_video(
         "analysis_id": analysis_id,
         "filename": video.filename,
         "pressure_report": pressure_report,
+        "goal_motion": analysis_data.get("goal_motion"),
+        "goal_setup": analysis_data.get("goal_setup"),
 
         "summary": asdict(summary),
 

@@ -9,7 +9,8 @@ import {
 } from "../lib/speech";
 
 import { API_BASE, analyzeVideo, spokenCue } from "../lib/api";
-import type { AnalysisResponse, AthleteSide } from "../lib/analysis";
+import type { AnalysisResponse, AthleteSide, GoalSetupValue } from "../lib/analysis";
+import GoalSetup from "../components/GoalSetup";
 import LiveSession from "../components/LiveSession";
 import PressureFeedback, { PressureSetup } from "../components/PressureFeedback";
 
@@ -30,6 +31,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [athleteSide, setAthleteSide] = useState<AthleteSide>("");
+  const [goalSetup, setGoalSetup] = useState<GoalSetupValue | null>(null);
+  const [fileRevision, setFileRevision] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hasWelcomed = useRef(false);
@@ -55,6 +58,8 @@ export default function Home() {
     const file = event.target.files?.[0] ?? null;
 
     setSelectedFile(file);
+    setGoalSetup(null);
+    setFileRevision((value) => value + 1);
     setAthleteSide("");
     setResult(null);
     setError(null);
@@ -97,7 +102,7 @@ export default function Home() {
     }, 900);
 
     try {
-      const data = await analyzeVideo(selectedFile, undefined, athleteSide);
+      const data = await analyzeVideo(selectedFile, undefined, athleteSide, goalSetup);
 
       setActiveStage(processingStages.length - 1);
 
@@ -115,6 +120,7 @@ export default function Home() {
         speak(spokenFeedback);
       }
     } catch (err) {
+      setGoalSetup(null);
       if (err instanceof Error) {
         setError(err.message);
       } else {
@@ -127,6 +133,7 @@ export default function Home() {
   };
 
   const resetAnalysis = () => {
+    setGoalSetup(null);
     setSelectedFile(null);
     setResult(null);
     setError(null);
@@ -474,6 +481,7 @@ export default function Home() {
             )}
           </div>
 
+          {selectedFile && <GoalSetup key={fileRevision} file={selectedFile} onChange={setGoalSetup} />}
           <PressureSetup value={athleteSide} onChange={setAthleteSide} />
           <button
             className="analyze-button"

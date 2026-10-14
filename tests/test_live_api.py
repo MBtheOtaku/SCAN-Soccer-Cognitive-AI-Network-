@@ -21,7 +21,8 @@ def api(monkeypatch, tmp_path):
     class Summary:
         prototype_feedback: str = "Repeat the movement."
 
-    def existing_analyze(video, model, annotated, csv, report, roi):
+    def existing_analyze(video, model, annotated, csv, report, roi, **kwargs):
+        module.received_goal_options = kwargs
         calls.append((video.suffix, video.read_bytes(), roi))
         report.write_text(json.dumps({"coaching_report": {"spoken_cue": None}}))
         return Summary()
@@ -97,3 +98,54 @@ def test_invalid_pressure_setup_rejected_before_analysis(api):
         asyncio.run(module.analyze_video(upload, roi=None, athlete_start_side="middle"))
     assert error.value.status_code == 400
     assert not calls
+
+
+def test_unconfirmed_analysis_does_not_read_shared_goal_setup(api):
+    module, _ = api
+    upload = UploadFile(filename="rep.mp4", file=io.BytesIO(b"clip bytes"))
+    asyncio.run(module.analyze_video(upload, roi=None))
+    assert module.received_goal_options["use_legacy_goal_calibration"] is False
+    assert module.received_goal_options["goal_calibration_override"] is None
+
+
+def test_confirmed_setup_requires_reference_photo(api):
+    module, calls = api
+    setup = json.dumps({"confirmed": True, "corners": [[.2, .2], [.8, .2], [.8, .6], [.2, .6]]})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(module.analyze_video(UploadFile(filename="rep.mp4", file=io.BytesIO(b"clip")), roi=None, goal_setup=setup))
+    assert error.value.status_code == 400
+    assert not calls
+
+
+def test_confirmed_setups_are_isolated_between_requests(api):
+    import cv2
+    import numpy as np
+    module, _ = api
+    _, encoded = cv2.imencode(".jpg", np.zeros((100, 200, 3), np.uint8))
+    first = None
+    for left in [.1, .3]:
+        setup = json.dumps({"confirmed": True, "corners": [[left, .2], [.8, .2], [.8, .6], [left, .6]]})
+        reference = UploadFile(filename="ref.jpg", file=io.BytesIO(encoded.tobytes()))
+        upload = UploadFile(filename="rep.mp4", file=io.BytesIO(b"clip"))
+        asyncio.run(module.analyze_video(upload, roi=None, goal_setup=setup, goal_reference=reference))
+        options = module.received_goal_options
+        assert options["goal_calibration_override"].top_left[0] == pytest.approx(left)
+        assert options["goal_reference_path"].is_file()
+        assert reference.file.closed
+        if first is None:
+            first = options
+        else:
+            assert options["goal_reference_path"] != first["goal_reference_path"]
+    assert first["goal_calibration_override"].top_left[0] == pytest.approx(.1)
+
+
+def test_goal_proposal_endpoint_closes_photo_and_requires_confirmation(api):
+    import cv2
+    import numpy as np
+    module, _ = api
+    _, encoded = cv2.imencode(".jpg", np.zeros((100, 200, 3), np.uint8))
+    reference = UploadFile(filename="ref.jpg", file=io.BytesIO(encoded.tobytes()))
+    result = asyncio.run(module.propose_goal(reference))
+    assert result["candidates"] == []
+    assert result["requires_confirmation"] is True
+    assert reference.file.closed

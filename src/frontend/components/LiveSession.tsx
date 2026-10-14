@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { analyzeVideo, spokenCue } from "../lib/api";
-import type { AnalysisResponse, AthleteSide } from "../lib/analysis";
+import type { AnalysisResponse, AthleteSide, GoalSetupValue } from "../lib/analysis";
+import GoalSetup from "./GoalSetup";
 import { speak, stopSpeaking } from "../lib/speech";
 import PressureFeedback, { PressureSetup } from "./PressureFeedback";
 import GoalBeacon from "./GoalBeacon";
@@ -21,6 +22,8 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [reps, setReps] = useState(0);
   const [athleteSide, setAthleteSide] = useState<AthleteSide>("");
+  const [goalSetup, setGoalSetup] = useState<GoalSetupValue | null>(null);
+  const [setupRevision, setSetupRevision] = useState(0);
   const preview = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -54,6 +57,8 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
 
   async function enableCamera() {
     if (busy.current) return;
+    setGoalSetup(null);
+    setSetupRevision((value) => value + 1);
     busy.current = true;
     setConnecting(true);
     setError(null);
@@ -67,6 +72,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
       stream.current = acquired;
       acquired.getVideoTracks().forEach((track) => {
         track.onended = () => {
+          setGoalSetup(null);
           release();
           setCameraReady(false);
           setPhase("READY");
@@ -126,9 +132,14 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
           const blob = new Blob(chunks, { type: recording.mimeType });
           if (!blob.size) throw new Error("The camera returned an empty clip. Please retry.");
           const extension = recording.mimeType.includes("mp4") ? "mp4" : "webm";
-          const analysis = await analyzeVideo(new File([blob], `rep-${Date.now()}.${extension}`, { type: blob.type }), controller.signal, athleteSide);
+          const analysis = await analyzeVideo(new File([blob], `rep-${Date.now()}.${extension}`, { type: blob.type }), controller.signal, athleteSide, goalSetup);
           if (token !== generation.current) return;
           setResult(analysis);
+          if (goalSetup && (!analysis.goal_motion?.valid_frames || (analysis.goal_motion.valid_frames / (analysis.goal_motion.valid_frames + (analysis.goal_motion.lost_frames ?? 0))) < .7)) {
+            setGoalSetup(null);
+            setSetupRevision((value) => value + 1);
+            setError("Goal tracking was unreliable. Recapture and confirm the goal before the next shot; technique analysis is still available.");
+          }
           setReps((count) => count + 1);
           setPhase("REP COMPLETE");
           const cue = spokenCue(analysis);
@@ -157,13 +168,14 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
   return (
     <section className="live-session result-panel">
       <button className="secondary-button" aria-expanded={open} onClick={() => {
-        if (open) { release(); setCameraReady(false); setConnecting(false); setPhase("READY"); }
+        if (open) { release(); setGoalSetup(null); setCameraReady(false); setConnecting(false); setPhase("READY"); }
         setOpen(!open);
       }}>{open ? "CLOSE LIVE SESSION" : "OPEN LIVE SESSION"}</button>
       {open && <>
         <h2 className="panel-label">LIVE SESSION v0.1</h2>
         <p>Place your phone where your full movement is visible. START REP records 4.5 seconds, then analyses the clip on your laptop. Keep this page visible.</p>
         <video ref={preview} className="live-preview" autoPlay muted playsInline aria-label="Live camera preview" />
+        <GoalSetup key={setupRevision} videoRef={preview} disabled={!cameraReady || phase !== "READY"} onChange={setGoalSetup} />
         <PressureSetup value={athleteSide} onChange={setAthleteSide} disabled={phase !== "READY"} />
         <GoalBeacon ready={cameraReady && phase === "READY"} voiceEnabled={voiceEnabled} />
         <p role="status" aria-live="polite">{connecting ? "REQUESTING CAMERA" : !cameraReady ? "CAMERA OFF" : phase} · {reps} reps complete</p>

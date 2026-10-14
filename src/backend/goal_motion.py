@@ -10,7 +10,8 @@ from src.backend.goal_tracking import GoalCalibration
 
 
 class GoalMotionTracker:
-    def __init__(self, reference: np.ndarray, calibration: GoalCalibration):
+    def __init__(self, reference: np.ndarray, calibration: GoalCalibration, external_reference: bool = False):
+        self.external_reference = external_reference
         self.calibration = calibration
         self.height, self.width = reference.shape[:2]
         self.reference = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
@@ -42,7 +43,7 @@ class GoalMotionTracker:
     def _observe(self, frame, frame_index):
         if frame.shape[:2] != (self.height, self.width):
             return None
-        if frame_index == self.calibration.reference_frame:
+        if not self.external_reference and frame_index == self.calibration.reference_frame:
             self.last_matrix = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
             return self.calibration
         if self.points is None or len(self.points) < 15:
@@ -86,6 +87,7 @@ class GoalMotionTracker:
         return GoalCalibration(*(tuple(point) for point in points), reference_frame=self.calibration.reference_frame)
 
     def summary(self):
-        return {"mode": "reference_anchored_optical_flow", "reference_frame": self.calibration.reference_frame,
+        return {"mode": "reference_anchored_optical_flow", "reference_frame": None if self.external_reference else self.calibration.reference_frame,
+                "reference_source": "captured_photo" if self.external_reference else "clip_frame",
                 "valid_frames": self.valid_frames, "lost_frames": self.lost_frames,
                 "confidence_note": "Initial corners must match this clip. Tracking supports pan, rotation and modest zoom; large viewpoint changes, cuts or weak visual detail can require recalibration. Lost frames do not support goal judgements."}

@@ -722,6 +722,9 @@ def analyze(
     csv_path: Path,
     json_path: Path,
     roi_text: Optional[str],
+    goal_calibration_override: Optional[GoalCalibration] = None,
+    use_legacy_goal_calibration: bool = True,
+    goal_reference_path: Optional[Path] = None,
 ) -> ShotSummary:
 
     cap = cv2.VideoCapture(str(video))
@@ -736,17 +739,26 @@ def analyze(
     from src.backend.goal_motion import GoalMotionTracker
     goal_tracker = None
     goal_frames = {}
-    goal_calibration = None
+    goal_calibration = goal_calibration_override
     goal_calibration_path = Path("data/goal_calibration.json")
 
-    if goal_calibration_path.exists():
+    if use_legacy_goal_calibration and goal_calibration is None and goal_calibration_path.exists():
         goal_calibration = GoalCalibration.load(goal_calibration_path)
+    if goal_calibration is not None:
         reference_capture = cv2.VideoCapture(str(video))
         try:
-            reference_capture.set(cv2.CAP_PROP_POS_FRAMES, goal_calibration.reference_frame)
-            reference_ok, reference = reference_capture.read()
+            if goal_reference_path is not None:
+                reference = cv2.imread(str(goal_reference_path))
+                reference_ok = reference is not None
+                if reference_ok:
+                    if abs(reference.shape[1] / reference.shape[0] - width / height) > .02:
+                        raise ValueError("Goal reference aspect ratio does not match the recording.")
+                    reference = cv2.resize(reference, (width, height))
+            else:
+                reference_capture.set(cv2.CAP_PROP_POS_FRAMES, goal_calibration.reference_frame)
+                reference_ok, reference = reference_capture.read()
             if reference_ok:
-                goal_tracker = GoalMotionTracker(reference, goal_calibration)
+                goal_tracker = GoalMotionTracker(reference, goal_calibration, external_reference=goal_reference_path is not None)
         except (cv2.error, ValueError) as exc:
             print(f"Goal motion tracking unavailable: {exc}")
         finally:
@@ -1118,7 +1130,8 @@ def analyze(
     analysis_payload["goal_tracking"] = (
         goal_outcome.to_dict()
     )
-    analysis_payload["goal_motion"] = goal_tracker.summary() if goal_tracker else {"mode": "unavailable"}
+    analysis_payload["goal_motion"] = goal_tracker.summary() if goal_tracker else {"mode": "unavailable", "valid_frames": 0, "lost_frames": frame_idx}
+    analysis_payload["goal_setup"] = {"source": "request" if goal_calibration_override else "legacy" if goal_calibration else "none", "calibration": goal_calibration.to_dict() if goal_calibration else None}
 
     analysis_payload["situated_state"] = (
         situated_state.to_dict()

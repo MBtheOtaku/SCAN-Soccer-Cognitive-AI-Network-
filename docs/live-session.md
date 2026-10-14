@@ -1,5 +1,7 @@
 # Live Session v0.1
 
+Goal setup: [automatic goal proposals, confirmation and manual adjustment](goal-setup.md).
+
 Optional post-rep opponent-pressure review and a Bluetooth speaker goal beacon are
 documented in [the pressure/beacon prototype guide](opponent-pressure.md).
 

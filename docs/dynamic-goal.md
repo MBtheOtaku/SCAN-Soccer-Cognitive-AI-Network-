@@ -1,5 +1,9 @@
 # Camera-motion-aware goal calibration
 
+Web uploads and Live Session now use [automatic proposals with per-setup
+confirmation](goal-setup.md). The shared-file instructions below describe the
+standalone CLI workflow.
+
 Goal corners still need to be calibrated for the clip. They now follow observed
 camera motion instead of remaining fixed throughout the video. The existing
 annotated video and goal-entry analysis use the same per-frame calibration.
