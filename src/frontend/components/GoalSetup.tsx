@@ -4,25 +4,7 @@ import { API_BASE } from "../lib/api";
 import type { GoalPoint, GoalSetupValue } from "../lib/analysis";
 import { validGoalCorners } from "../lib/goalSetup";
 
-async function snapshot(file?: File, live?: HTMLVideoElement | null): Promise<Blob> {
-  let video = live;
-  let url: string | null = null;
-  try {
-    if (file) {
-      const player = document.createElement("video");
-      player.muted = true;
-      player.playsInline = true;
-      video = player;
-      url = URL.createObjectURL(file);
-      await new Promise<void>((resolve, reject) => {
-        const timeout = window.setTimeout(() => { cleanup(); reject(new Error("The video preview timed out. Try an MP4 or MOV supported by this browser.")); }, 15000);
-        const cleanup = () => { window.clearTimeout(timeout); player.onloadeddata = null; player.onerror = null; };
-        player.onloadeddata = () => { cleanup(); resolve(); };
-        player.onerror = () => { cleanup(); reject(new Error("This browser cannot preview the clip. You can still analyse technique without goal setup.")); };
-        player.src = url!;
-        player.load();
-      });
-    }
+async function snapshot(video?: HTMLVideoElement | null): Promise<Blob> {
     if (!video?.videoWidth || video.readyState < 2) throw new Error("Enable the camera and wait for the preview before finding the goal.");
     const scale = Math.min(1, 1280 / video.videoWidth);
     const canvas = document.createElement("canvas");
@@ -31,10 +13,14 @@ async function snapshot(file?: File, live?: HTMLVideoElement | null): Promise<Bl
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Image capture is unavailable in this browser.");
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let visible = 0, samples = 0;
+    for (let i = 0; i < pixels.length; i += 64) {
+      samples++;
+      if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 12) visible++;
+    }
+    if (visible / samples < .01) throw new Error("The camera frame is blank. Wait for a visible preview, then retry FIND GOAL.");
     return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not capture a reference photo.")), "image/jpeg", .9));
-  } finally {
-    if (url) { video?.pause(); video?.removeAttribute("src"); video?.load(); URL.revokeObjectURL(url); }
-  }
 }
 
 export default function GoalSetup({ file, videoRef, disabled = false, onChange }: {
@@ -59,27 +45,38 @@ export default function GoalSetup({ file, videoRef, disabled = false, onChange }
   async function findGoal() {
     const token = ++generation.current;
     request.current?.abort();
-    setBusy(true); setMessage(""); setCandidates([]); change([]); setManual(false);
+    setBusy(true); setMessage(""); setPhoto(null); setCandidates([]); change([]); setManual(false);
     const controller = new AbortController();
     request.current = controller;
     try {
-      const blob = await snapshot(file, videoRef?.current);
-      if (token !== generation.current) return;
-      setPhoto({ blob, url: URL.createObjectURL(blob) });
-      const form = new FormData(); form.append("frame", blob, "goal-reference.jpg");
-      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      const form = new FormData();
+      if (file) {
+        form.append("video", file);
+      } else {
+        const blob = await snapshot(videoRef?.current);
+        if (token !== generation.current) return;
+        setPhoto({ blob, url: URL.createObjectURL(blob) });
+        form.append("frame", blob, "goal-reference.jpg");
+      }
+      const timeout = window.setTimeout(() => controller.abort(), file ? 60000 : 15000);
       try {
-        const response = await fetch(`${API_BASE}/goals/propose`, { method: "POST", body: form, signal: controller.signal });
+        const response = await fetch(`${API_BASE}${file ? "/goals/preview" : "/goals/propose"}`, { method: "POST", body: form, signal: controller.signal });
         const data = await response.json().catch(() => null);
         if (!response.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "Automatic goal proposal failed. Mark the corners manually below.");
         if (token !== generation.current) return;
+        if (file) {
+          if (typeof data?.image_base64 !== "string") throw new Error("No reference image was returned. Restart the backend and retry FIND GOAL.");
+          const bytes = Uint8Array.from(atob(data.image_base64), (character) => character.charCodeAt(0));
+          const blob = new Blob([bytes], { type: "image/jpeg" });
+          setPhoto({ blob, url: URL.createObjectURL(blob) });
+        }
         const proposals: GoalPoint[][] = (data?.candidates ?? []).map((c: { corners: GoalPoint[] }) => c.corners).filter(validGoalCorners);
         setCandidates(proposals);
         if (proposals.length) { change(proposals[0]); setMessage("Check all four corners. Drag a numbered handle to adjust, then confirm the goal."); }
         else setMessage("No supported goal outline found. Use MARK CORNERS, then tap top-left, top-right, bottom-right and bottom-left.");
       } finally { window.clearTimeout(timeout); }
     } catch (err) {
-      if (token === generation.current) setMessage(controller.signal.aborted ? "Goal detection timed out. Mark the corners manually or retry." : err instanceof TypeError ? "Cannot reach goal detection. Use MARK CORNERS on the captured photo or check the backend connection." : err instanceof Error ? err.message : "Goal setup failed. Retry or mark the corners manually.");
+      if (token === generation.current) setMessage(controller.signal.aborted ? "Goal preview timed out. Retry FIND GOAL, or skip goal setup for technique analysis." : err instanceof TypeError ? "Cannot reach goal setup. Check the backend connection and retry; a captured photo can still be marked manually." : err instanceof Error ? err.message : "Goal setup failed. Retry or mark the corners manually.");
     } finally { if (token === generation.current) setBusy(false); }
   }
 

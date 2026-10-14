@@ -4,6 +4,7 @@ import shutil
 import uuid
 import json
 import os
+import base64
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,6 +93,32 @@ def health_check():
 # ---------------------------------------------------------
 # Video analysis
 # ---------------------------------------------------------
+
+@app.post("/goals/preview")
+async def goal_video_preview(video: UploadFile = File(...)):
+    import cv2
+    from src.backend.goal_preview import extract_goal_preview
+    from src.backend.goal_proposal import propose_goals
+    suffix = Path(video.filename or "").suffix.lower()
+    preview_path = INPUT_DIR / f"goal-preview-{uuid.uuid4().hex}{suffix}"
+    try:
+        if suffix not in {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}:
+            raise ValueError("Unsupported video format for goal setup.")
+        with preview_path.open("wb") as output:
+            await run_in_threadpool(shutil.copyfileobj, video.file, output)
+        image, frame_index = await run_in_threadpool(extract_goal_preview, preview_path)
+        candidates = await run_in_threadpool(propose_goals, image)
+        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            raise ValueError("Could not create the goal reference image.")
+        return {"image_base64": base64.b64encode(encoded).decode("ascii"), "frame_index": frame_index,
+                "candidates": candidates, "requires_confirmation": True}
+    except (ValueError, cv2.error) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        await video.close()
+        preview_path.unlink(missing_ok=True)
+
 
 @app.post("/goals/propose")
 async def propose_goal(frame: UploadFile = File(...)):

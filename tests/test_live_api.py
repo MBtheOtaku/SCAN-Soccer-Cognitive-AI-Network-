@@ -149,3 +149,43 @@ def test_goal_proposal_endpoint_closes_photo_and_requires_confirmation(api):
     assert result["candidates"] == []
     assert result["requires_confirmation"] is True
     assert reference.file.closed
+
+
+def test_uploaded_preview_returns_visible_image_and_deletes_temporary_clip(api, monkeypatch):
+    import base64
+    import cv2
+    import numpy as np
+    from src.backend import goal_preview
+    module, _ = api
+    paths = []
+
+    def extract(path):
+        assert path.read_bytes() == b"uploaded clip"
+        paths.append(path)
+        return np.full((80, 160, 3), 150, np.uint8), 4
+
+    monkeypatch.setattr(goal_preview, "extract_goal_preview", extract)
+    upload = UploadFile(filename="rep.mov", file=io.BytesIO(b"uploaded clip"))
+    result = asyncio.run(module.goal_video_preview(upload))
+    image = cv2.imdecode(np.frombuffer(base64.b64decode(result["image_base64"]), np.uint8), cv2.IMREAD_COLOR)
+    assert image.mean() > 100
+    assert result["frame_index"] == 4
+    assert result["requires_confirmation"] is True
+    assert upload.file.closed
+    assert not paths[0].exists()
+
+
+def test_failed_preview_closes_and_removes_temporary_upload(api, monkeypatch):
+    from src.backend import goal_preview
+    module, _ = api
+
+    def fail(path):
+        raise ValueError("Could not decode clip")
+
+    monkeypatch.setattr(goal_preview, "extract_goal_preview", fail)
+    upload = UploadFile(filename="rep.mov", file=io.BytesIO(b"bad clip"))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(module.goal_video_preview(upload))
+    assert error.value.status_code == 400
+    assert upload.file.closed
+    assert not list(module.INPUT_DIR.glob("goal-preview-*"))

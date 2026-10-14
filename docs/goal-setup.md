@@ -14,6 +14,10 @@ CONFIRM GOAL. If several candidates appear, choose the intended one. Drag number
 handles to adjust; MARK CORNERS clears them for four taps in order: top-left,
 top-right, bottom-right, bottom-left. Then analyse as usual. Changing the uploaded
 file clears its goal setup. If analysis fails, confirm setup again before retrying.
+Uploaded clips are decoded on the backend for this preview, avoiding browser MOV
+black-frame capture. FIND GOAL uploads a temporary preview copy before the normal
+analysis upload. It tries a few early frames to skip blank introductions, then deletes
+the temporary clip. A preview with no detected goal still supports manual marking.
 
 **Live Session:** enable the camera, point it at the goal, tap FIND GOAL and confirm
 or adjust the outline. START REP reuses that setup across reps. A new camera access,
@@ -49,6 +53,8 @@ calibrated probability or a guarantee of accuracy.
 
 ## API
 
+- `POST /goals/preview`: multipart video field `video`. Returns a visible JPEG
+  `image_base64`, its `frame_index`, and provisional candidates requiring confirmation.
 - `POST /goals/propose`: multipart JPEG/image field `frame`, maximum 5 MB and
   12 million decoded pixels. Returns candidates and `requires_confirmation: true`.
 - `POST /analyze`: optional multipart `goal_setup` JSON of
