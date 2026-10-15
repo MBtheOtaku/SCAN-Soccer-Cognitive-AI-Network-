@@ -1,6 +1,8 @@
 import type { AnalysisResponse, AthleteSide, GoalSetupValue } from "./analysis";
 
-export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000").replace(/\/+$/, "");
+// Browser requests follow the page's origin, including on a phone or hotspot.
+// Next forwards these requests to the laptop's local backend.
+export const API_BASE = "/api/scan";
 
 export async function analyzeVideo(video: File, signal?: AbortSignal, athleteSide: AthleteSide = "", goal: GoalSetupValue | null = null): Promise<AnalysisResponse> {
   const form = new FormData();

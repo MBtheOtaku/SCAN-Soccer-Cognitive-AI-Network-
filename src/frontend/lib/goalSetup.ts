@@ -1,5 +1,12 @@
 import type { GoalPoint } from "./analysis";
 
+export function nudgeGoalCorner(points: GoalPoint[], index: number, dx: number, dy: number, width: number, height: number): GoalPoint[] {
+  if (!points[index] || ![dx, dy, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return points;
+  return points.map((point, i): GoalPoint => i === index
+    ? [Math.max(0, Math.min(1, point[0] + dx / width)), Math.max(0, Math.min(1, point[1] + dy / height))]
+    : point);
+}
+
 export function validGoalCorners(points: GoalPoint[]): boolean {
   if (points.length !== 4 || points.some((point) => point.length !== 2 || point.some((v) => !Number.isFinite(v) || v < 0 || v > 1))) return false;
   let area = 0;

@@ -14,6 +14,13 @@ CONFIRM GOAL. If several candidates appear, choose the intended one. Drag number
 handles to adjust; MARK CORNERS clears them for four taps in order: top-left,
 top-right, bottom-right, bottom-left. Then analyse as usual. Changing the uploaded
 file clears its goal setup. If analysis fails, confirm setup again before retrying.
+
+For precise adjustment, tap a numbered handle or a corner-name button. The magnified
+view centres its crosshair on that exact corner. Use arrow buttons to move it by
+1 or 5 reference-image pixels per tap; a focused precision panel also accepts arrow
+keys. Movement stops at the image edges. Any edit clears confirmation. RESET TO
+PROPOSED BOUNDS restores the currently selected automatic candidate and requires
+confirmation again; this button is available when an automatic proposal exists.
 Uploaded clips are decoded on the backend for this preview, avoiding browser MOV
 black-frame capture. FIND GOAL uploads a temporary preview copy before the normal
 analysis upload. It tries a few early frames to skip blank introductions, then deletes

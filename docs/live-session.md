@@ -16,7 +16,7 @@ phone awake. READY permits another repetition; the last report stays visible.
 From the repository root, using the Python environment with the existing dependencies:
 
 ```powershell
-python -m uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn src.backend.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 In another terminal:
@@ -26,69 +26,61 @@ cd src/frontend
 npm run dev -- --hostname 0.0.0.0
 ```
 
-Open `http://localhost:3000` on the laptop. The API defaults to
-`http://127.0.0.1:8000`. Check an existing MP4/MOV upload and its Session Report,
+Open `http://localhost:3000` on the laptop. Browser API requests use `/api/scan`,
+forwarded by Next to `http://127.0.0.1:8000`. Check an existing MP4/MOV upload and its Session Report,
 then open Live Session, enable the camera and record two repetitions.
 
-## Phone test on the same Wi-Fi: trusted HTTPS
+## Phone setup: same-origin API and trusted HTTPS
 
-Plain `http://<laptop-ip>:3000` does **not** provide a secure camera context.
-HTTPS on the frontend also requires HTTPS on the API to avoid mixed-content blocking.
-Use a locally trusted certificate setup (for example mkcert), or trusted HTTPS
-tunnels to both servers. This feature does not set up certificates or tunnels.
+The browser now uses `/api/scan` on the frontend's own origin for goal setup,
+analysis and result videos. Next forwards requests to `http://127.0.0.1:8000`.
+Old `NEXT_PUBLIC_API_BASE` values are ignored and can be removed. Backend CORS
+origins do not need updating for this proxied workflow. Restart Next after updating.
 
-For a local certificate setup:
+Start the backend from the repository root, using the Python environment with
+SCAN's dependencies (the backend no longer needs HTTPS certificates):
 
-1. Find the laptop's Wi-Fi IPv4 address with `ipconfig` (example `192.168.1.50`).
-2. Install mkcert, run `mkcert -install`, then generate a certificate outside the
-   repo for that IP and localhost: `mkcert 192.168.1.50 localhost 127.0.0.1`.
-   Use your actual address. Install and trust mkcert's **root certificate** on the
-   phone as well; on iOS enable full trust in Certificate Trust Settings. Never
-   copy the CA private key to the phone or commit certificate keys.
-3. In `src/frontend/.env.local`, set:
+```powershell
+python -m uvicorn src.backend.api.main:app --host 127.0.0.1 --port 8000
+```
 
-   ```dotenv
-   NEXT_PUBLIC_API_BASE=https://192.168.1.50:8000
-   ```
+Start the frontend in a separate terminal:
 
-   This is the API URL only. Never prefix OpenAI or TypeSafe secrets with
-   `NEXT_PUBLIC_`. Restart Next after changing this value; production builds embed it.
-   Next's development JavaScript allowlist automatically includes this API hostname
-   for the same-laptop setup. If the frontend uses a different hostname (for example
-   a separate HTTPS tunnel), set `SCAN_DEV_HOSTS` to that frontend hostname before
-   starting Next. This accepts comma-separated hostnames, without schemes or ports.
-4. Start the backend from the repository root, substituting your IP and absolute
-   certificate/key paths:
+```powershell
+cd src/frontend
+npm run dev -- --hostname 0.0.0.0 --experimental-https --experimental-https-key "$env:USERPROFILE\scan-certs\scan-key.pem" --experimental-https-cert "$env:USERPROFILE\scan-certs\scan.pem"
+```
 
-   ```powershell
-   $env:SCAN_CORS_ORIGINS="https://192.168.1.50:3000"
-   python -m uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8000 --ssl-keyfile C:/certs/scan-key.pem --ssl-certfile C:/certs/scan.pem
-   ```
+Open `https://<laptop-address>:3000/api/scan/health` on the phone to verify the
+complete connection, then open `https://<laptop-address>:3000` to use SCAN.
+Allow frontend port 3000 through the appropriate Windows Firewall network profile.
+The phone does not need access to backend port 8000.
 
-5. Start Next from `src/frontend` with the same trusted certificate:
+### What this fixes, and what still needs testing
 
-   ```powershell
-   npm run dev -- --hostname 0.0.0.0 --experimental-https --experimental-https-key C:/certs/scan-key.pem --experimental-https-cert C:/certs/scan.pem
-   ```
+Changing networks no longer requires editing the browser's backend address or
+backend CORS settings. A server-only `SCAN_BACKEND_ORIGIN` can override loopback
+if the backend deliberately runs elsewhere. Use an HTTP loopback backend by
+default; do not disable TLS verification to connect to an untrusted HTTPS backend.
 
-6. Allow inbound TCP 3000 and 8000 for the private Wi-Fi network in Windows
-   Firewall if needed. On the phone open `https://192.168.1.50:8000/health` first,
-   verify no certificate warning, then open `https://192.168.1.50:3000`.
-   Enable camera access and record two reps without refreshing.
+The phone still needs a connection to the laptop and a trusted frontend HTTPS
+address. Connecting the laptop to the iPhone's Personal Hotspot is a candidate
+for pitch use, but test phone-to-laptop access before relying on it. No venue
+Wi-Fi is required if that connection works. External AI services still require
+internet access; existing deterministic fallbacks remain unchanged.
 
-The bare `--experimental-https` flag generates a localhost certificate; it alone
-does not establish trust on a phone or cover the laptop's LAN IP. With HTTPS tunnels,
-set `NEXT_PUBLIC_API_BASE` to the API tunnel URL and `SCAN_CORS_ORIGINS` to the exact
-frontend tunnel origin. CORS accepts comma-separated additional origins, without a
-trailing slash, and keeps HTTP and HTTPS localhost defaults. There is no wildcard.
-For simultaneous laptop/phone testing, use the same LAN HTTPS frontend URL on both
-devices. Both upload and Live Session share `NEXT_PUBLIC_API_BASE` and `/analyze`.
-If upload shows a fetch error, first open the configured API's `/health` URL in the
-same browser, verify its certificate is trusted and check the frontend origin is
-allowed by backend CORS. HTTPS frontends require an HTTPS API URL; the HTTP local
-fallback is intended for the original HTTP-only laptop setup.
-The backend has no authentication: use a trusted development network; public tunnels
-expose the analysis service and generated outputs unless access controls are added.
+An IP-based frontend URL and certificate can still change across networks.
+A stable laptop hostname included in the certificate may help only if it resolves
+from the phone on that network; this change does not configure hostname discovery
+or install certificates. On iPhone, the issuing root certificate must be installed
+and fully trusted. Never share the CA private key.
+
+If Next reports a development-origin warning, set `SCAN_DEV_HOSTS` to the exact
+frontend hostname or IP (no scheme or port), then restart Next. This is a Next
+development setting, separate from backend routing. Do not use a blanket wildcard.
+
+Smoke-test goal preview, a normal upload, result-video seeking and a live rep on
+the phone. The local HTTPS/hotspot path requires a hands-on device test.
 
 ## Behaviour and checks
 
