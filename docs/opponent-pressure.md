@@ -47,6 +47,25 @@ evidence. Lack of a detection does not establish safety.
 
 ## Bluetooth speaker goal beacon
 
+### Pre-training sound check
+
+Open Live Session with VOICE ON to use AUDIO SOUND CHECK. No camera or backend
+connection is needed. TEST TARGET BEACON plays three pulses of the existing mono
+goal tone. TEST COACHING VOICE uses the existing voice settings to say
+“Sound check. Ready for your next repetition.” TEST SEQUENCE plays the three
+pulses, then that sample cue; it does not implement overlapping audio or coaching
+policy. STOP AUDIO cancels the sample and all its pending playback.
+
+Starting a test turns off the regular goal beacon; restart that beacon explicitly
+after testing. Tests stop when voice is disabled, recording/analysis begins, the
+session closes or the page becomes hidden. Controls are unavailable during reps.
+Connect Bluetooth in the phone's settings and adjust phone/speaker volume there.
+The browser cannot verify which speaker actually produced sound. On Safari, if
+the sequence's delayed voice is blocked, use TEST COACHING VOICE directly.
+Verify audibility, STOP AUDIO and interruption on the actual phone and speaker.
+
+### Regular goal beacon
+
 Pair the phone to the speaker through iOS. In Live Session, enable the camera, turn
 VOICE ON and tap **START GOAL BEACON** while READY. A quiet mono pulse repeats every
 two seconds. Place the speaker near the goal target for a physical auditory landmark;

@@ -169,6 +169,8 @@ export function speak(
     rate?: number;
     pitch?: number;
     volume?: number;
+    onEnd?: () => void;
+    onError?: () => void;
   }
 ) {
   if (
@@ -197,6 +199,8 @@ export function speak(
   utterance.rate = options?.rate ?? 0.92;
   utterance.pitch = options?.pitch ?? 0.9;
   utterance.volume = options?.volume ?? 0.9;
+  utterance.onend = () => options?.onEnd?.();
+  utterance.onerror = () => options?.onError?.();
 
   window.speechSynthesis.speak(utterance);
 }

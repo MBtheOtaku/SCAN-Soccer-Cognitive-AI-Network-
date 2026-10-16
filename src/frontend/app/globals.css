@@ -1086,6 +1086,8 @@ body {
 .pressure-feedback { padding: 22px; margin: 20px 0; }
 .pressure-feedback p { line-height: 1.6; margin: 14px 0; }
 .goal-beacon { margin: 20px 0; }
+.sound-check { margin-top: 24px; padding: 20px; border: 1px solid var(--panel-border); border-radius: 8px; }
+.sound-check .live-controls { flex-wrap: wrap; }
 
 .goal-setup { width: min(760px, 100%); margin: 24px 0; padding: 18px; border: 1px solid var(--panel-border); border-radius: 8px; text-align: left; }
 .goal-setup p { margin: 12px 0; font-size: 13px; line-height: 1.6; }

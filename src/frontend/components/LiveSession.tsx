@@ -15,6 +15,7 @@ const MIME_TYPES = ["video/mp4;codecs=avc1.42E01E", "video/mp4", "video/webm;cod
 
 export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean }) {
   const [open, setOpen] = useState(false);
+  const [soundChecking, setSoundChecking] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [phase, setPhase] = useState<Phase>("READY");
@@ -177,7 +178,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
         <video ref={preview} className="live-preview" autoPlay muted playsInline aria-label="Live camera preview" />
         <GoalSetup key={setupRevision} videoRef={preview} disabled={!cameraReady || phase !== "READY"} onChange={setGoalSetup} />
         <PressureSetup value={athleteSide} onChange={setAthleteSide} disabled={phase !== "READY"} />
-        <GoalBeacon ready={cameraReady && phase === "READY"} voiceEnabled={voiceEnabled} />
+        <GoalBeacon ready={cameraReady && phase === "READY"} testReady={!connecting && phase === "READY"} voiceEnabled={voiceEnabled} testing={soundChecking} onTestingChange={setSoundChecking} />
         <p role="status" aria-live="polite">{connecting ? "REQUESTING CAMERA" : !cameraReady ? "CAMERA OFF" : phase} · {reps} reps complete</p>
         <div className="live-controls">
           {!cameraReady && <button className="secondary-button" disabled={connecting} onClick={enableCamera}>ENABLE CAMERA</button>}
@@ -197,7 +198,7 @@ export default function LiveSession({ voiceEnabled }: { voiceEnabled: boolean })
           </> : <p>{result.summary.prototype_feedback}</p>}
           {spokenCue(result) && <>
             <p><strong>Spoken cue: </strong>{spokenCue(result)}</p>
-            <button className="secondary-button" disabled={!voiceEnabled || phase === "RECORDING"} onClick={() => speak(spokenCue(result))}>REPLAY CUE</button>
+            <button className="secondary-button" disabled={!voiceEnabled || phase === "RECORDING" || soundChecking} onClick={() => speak(spokenCue(result))}>REPLAY CUE</button>
           </>}
         </div>}
       </>}
