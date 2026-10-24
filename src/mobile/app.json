@@ -1,6 +1,7 @@
 {
   "name": "SCAN",
   "slug": "scan-mobile",
+  "scheme": "scan",
   "version": "0.1.0",
   "orientation": "portrait",
   "icon": "./assets/scan-icon.png",
@@ -8,12 +9,20 @@
   "ios": {
     "supportsTablet": false,
     "bundleIdentifier": "com.matthewbui.scan",
-    "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
+    "infoPlist": {
+      "ITSAppUsesNonExemptEncryption": false
+    }
   },
   "plugins": [
-    ["expo-camera", {
-      "cameraPermission": "Allow SCAN to record your training repetitions.",
-      "recordAudioAndroid": false
-    }]
+    [
+      "expo-camera",
+      {
+        "cameraPermission": "Allow SCAN to record your training repetitions.",
+        "recordAudioAndroid": false
+      }
+    ],
+    "expo-asset",
+    "expo-router",
+    "expo-status-bar"
   ]
 }
