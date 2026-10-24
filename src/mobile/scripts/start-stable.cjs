@@ -14,12 +14,24 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Use a 
 
 console.log('\nSCAN stable preview — automatic reload is disabled.');
 console.log('After editing code: Ctrl+C, then run npm run start:stable again.');
-console.log('After Metro says it is ready, open the Wi-Fi address below in Expo Go:');
-for (const [name, addresses] of Object.entries(networkInterfaces())) {
-  if (/wsl|hyper-v|vethernet|docker|loopback/i.test(name)) continue;
-  for (const address of addresses ?? []) {
-    if (address.family === 'IPv4' && !address.internal) {
-      console.log(`  ${name}: exp://${address.address}:${port}`);
+const proxy = process.env.EXPO_PACKAGER_PROXY_URL;
+if (proxy) {
+  const remote = new URL(proxy);
+  if (remote.protocol !== 'http:' && remote.protocol !== 'https:') {
+    throw new Error('EXPO_PACKAGER_PROXY_URL must start with http:// or https://.');
+  }
+  const scheme = remote.protocol === 'https:' ? 'exps' : 'exp';
+  console.log('After Metro is ready, open this remote preview address in Expo Go:');
+  console.log(`  ${scheme}://${remote.host}`);
+  console.log('For a Tailscale address, connect Tailscale on both devices first.');
+} else {
+  console.log('After Metro says it is ready, open the Wi-Fi address below in Expo Go:');
+  for (const [name, addresses] of Object.entries(networkInterfaces())) {
+    if (/wsl|hyper-v|vethernet|docker|loopback/i.test(name)) continue;
+    for (const address of addresses ?? []) {
+      if (address.family === 'IPv4' && !address.internal) {
+        console.log(`  ${name}: exp://${address.address}:${port}`);
+      }
     }
   }
 }
