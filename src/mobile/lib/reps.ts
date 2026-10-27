@@ -1,6 +1,10 @@
 import * as FS from 'expo-file-system/legacy';
 
-export type Rep = { name: string; uri: string };
+export type RepDetails = { title?: string; notes?: string };
+export type Rep = { name: string; uri: string } & RepDetails;
+export const REP_TITLE_LIMIT = 80;
+export const REP_NOTES_LIMIT = 500;
+const repNamePattern = /^rep-\d+-[a-z0-9]+\.(mov|mp4)$/;
 type Job = { name: string; cachePath: string; bytes: number };
 
 function root() {
@@ -75,6 +79,41 @@ export async function saveRep(uri: string) {
 export async function listReps(): Promise<Rep[]> {
   await prepare();
   const names = (await FS.readDirectoryAsync(root()))
-    .filter(name => /^rep-\d+-[a-z0-9]+\.(mov|mp4)$/.test(name)).sort().reverse();
-  return names.map(name => ({ name, uri: root() + name }));
+    .filter(name => repNamePattern.test(name)).sort().reverse();
+  return Promise.all(names.map(async name => ({ name, uri: root() + name, ...await readDetails(name) })));
+}
+
+async function readDetails(name: string): Promise<RepDetails> {
+  // Optional metadata must never prevent an existing video from being listed.
+  try {
+    const metadata = JSON.parse(await FS.readAsStringAsync(root() + name + '.title.json'));
+    const text = (value: unknown, limit: number) => typeof value === 'string' && value.trim().length <= limit
+      ? value.trim() || undefined : undefined;
+    return { title: text(metadata.title, REP_TITLE_LIMIT), notes: text(metadata.notes, REP_NOTES_LIMIT) };
+  } catch { return {}; }
+}
+
+export async function renameRep(name: string, value: string): Promise<string | undefined> {
+  if (!repNamePattern.test(name)) throw new Error('Choose a saved rep to rename.');
+  const previous = await readDetails(name);
+  return (await saveRepDetails(name, value, previous.notes || '')).title;
+}
+
+export async function saveRepDetails(name: string, titleValue: string, notesValue: string): Promise<RepDetails> {
+  if (!repNamePattern.test(name)) throw new Error('Choose a saved rep to rename.');
+  const title = titleValue.trim();
+  const notes = notesValue.trim();
+  if (title.length > REP_TITLE_LIMIT) throw new Error(`Use ${REP_TITLE_LIMIT} characters or fewer.`);
+  if (notes.length > REP_NOTES_LIMIT) throw new Error(`Keep notes to ${REP_NOTES_LIMIT} characters or fewer.`);
+  if (!await size(root() + name)) throw new Error('This saved rep is no longer available.');
+  const metadata = root() + name + '.title.json';
+  if (!title && !notes) {
+    await FS.deleteAsync(metadata, { idempotent: true });
+    return {};
+  }
+  // Only metadata is replaced. Video names/URIs and their timestamps stay intact.
+  const temporary = metadata + '.tmp';
+  await FS.writeAsStringAsync(temporary, JSON.stringify({ title, notes }));
+  await FS.moveAsync({ from: temporary, to: metadata });
+  return { title: title || undefined, notes: notes || undefined };
 }

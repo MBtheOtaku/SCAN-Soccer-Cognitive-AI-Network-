@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { hasPendingSave, listReps, recoverSave, saveRep, type Rep } from './reps';
+import { hasPendingSave, listReps, recoverSave, renameRep, saveRep, saveRepDetails, type Rep } from './reps';
 
 type Store = {
   reps: Rep[]; loading: boolean; saving: boolean; pending: boolean; error: string | null;
   refresh: () => Promise<void>; save: (uri: string) => Promise<void>; retry: () => Promise<void>;
+  rename: (name: string, title: string) => Promise<void>;
+  updateDetails: (name: string, title: string, notes: string) => Promise<void>;
 };
 const Context = createContext<Store | null>(null);
 const describe = (error: unknown) => error instanceof Error ? error.message : 'Could not access your saved reps.';
@@ -44,7 +46,15 @@ export function RepProvider({ children }: { children: ReactNode }) {
     } catch (e) { setPending(true); setError(describe(e)); throw e; }
     finally { locked.current = false; setSaving(false); }
   }
-  return <Context.Provider value={{ reps, loading, saving, pending, error, refresh,
+  async function rename(name: string, value: string) {
+    const title = await renameRep(name, value);
+    setReps(current => current.map(rep => rep.name === name ? { ...rep, title } : rep));
+  }
+  async function updateDetails(name: string, title: string, notes: string) {
+    const details = await saveRepDetails(name, title, notes);
+    setReps(current => current.map(rep => rep.name === name ? { ...rep, title: details.title, notes: details.notes } : rep));
+  }
+  return <Context.Provider value={{ reps, loading, saving, pending, error, refresh, rename, updateDetails,
     save: (uri) => persist(uri), retry: () => persist() }}>{children}</Context.Provider>;
 }
 

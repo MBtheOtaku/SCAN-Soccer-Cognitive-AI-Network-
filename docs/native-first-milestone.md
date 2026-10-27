@@ -1,6 +1,10 @@
 # SCAN native milestone 1 — implement it yourself
 
 Prepared 19 October 2026. This is a code walkthrough, not an installed or device-tested app.
+Historical walkthrough: the existing mobile project was upgraded to SDK 58 on
+26 October 2026 to match the phone's Expo Go. Do not rerun this SDK 57 scaffold
+over the existing app. Use the current checked-in package.json/package-lock.json
+and [current UI/testing guide](native-ui.md) for continued development.
 The existing Next.js/FastAPI app is unchanged. Create a separate Expo React Native client.
 
 Goal: open the app, record up to five seconds without internet, save a completed rep,

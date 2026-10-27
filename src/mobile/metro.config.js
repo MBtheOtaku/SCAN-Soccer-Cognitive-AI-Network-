@@ -8,7 +8,7 @@ const existing = config.resolver.blockList;
 // Dependency repair backups are not app inputs. Match both Windows and POSIX paths.
 config.resolver.blockList = [
   ...(Array.isArray(existing) ? existing : existing ? [existing] : []),
-  /(?:^|[\\/])\.expo[\\/](?:sdk58-dependency-backup|metro-file-map)(?:[\\/]|$)/,
+  /(?:^|[\\/])\.expo[\\/](?:sdk\d+[^\\/]*|metro-file-map)(?:[\\/]|$)/,
 ];
 
 // Keep the watcher index separate from stale shared caches after dependency changes.

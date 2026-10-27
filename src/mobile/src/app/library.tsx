@@ -24,12 +24,13 @@ export default function Library() {
       </View>}
       {reps.map((rep, i) => {
         const date = repDate(rep.name);
+        const title = rep.title || `Rep ${String(reps.length - i).padStart(2, '0')}`;
         return <Pressable key={rep.name} accessibilityRole="button"
-          accessibilityLabel={`Play rep ${reps.length - i}, ${date.toLocaleString()}`}
+          accessibilityLabel={`Play ${title}, ${date.toLocaleString()}`}
           onPress={() => router.push({ pathname: '/rep/[name]', params: { name: rep.name } })}
           style={({ pressed }) => [ui.card, s.rep, pressed && { opacity: .7 }]}>
           <View style={s.play}><Text style={s.playIcon}>▶</Text></View>
-          <View style={s.description}><Text style={ui.heading}>Rep {String(reps.length - i).padStart(2, '0')}</Text>
+          <View style={s.description}><Text style={ui.heading}>{title}</Text>
             <Text style={ui.small}>{date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · {date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</Text>
             <Text style={ui.badge}>SAVED LOCALLY</Text>
           </View><Text style={s.chevron}>↗</Text>

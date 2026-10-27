@@ -164,6 +164,19 @@ To disable only the forwards created here:
 - https://tailscale.com/docs/reference/tailscale-cli/serve
 - https://docs.expo.dev/more/expo-cli/ (EXPO_PACKAGER_PROXY_URL)
 
-Prepared from the installed Expo SDK 57 CLI and the existing SCAN API. Tailscale
-was not present during preparation; phone mobile-data checks still require the
-device installation, account connection and the steps above.
+Initially prepared against SDK 57; the mobile app was upgraded to SDK 58 on
+26 October 2026 to match the phone's Expo Go. The private HTTP route on 8082 remains
+configured. A private HTTPS preview route was also configured for debugging:
+
+```powershell
+& 'C:\Program Files\Tailscale\tailscale.exe' serve --bg --https=8443 http://localhost:8081
+$env:EXPO_PACKAGER_PROXY_URL = 'https://laptop-rbgvktra.tail744b42.ts.net:8443'
+npm run start:stable -- --localhost
+```
+
+Run the npm command from `src/mobile`. For HTTPS use
+`exps://laptop-rbgvktra.tail744b42.ts.net:8443` on the phone, with the `s` included.
+Use your own Serve hostname for another laptop. An HTTP request on HTTPS port 8443
+returns 400; changing ports does not resolve an Expo SDK mismatch. Keep Expo Go
+installed to retain its local clips. The SDK 58 dependencies, TypeScript, lint,
+iOS bundle and Expo Doctor checks passed; final phone verification remains.

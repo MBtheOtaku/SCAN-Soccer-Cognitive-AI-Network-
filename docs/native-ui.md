@@ -4,7 +4,7 @@ The mobile app now enters through `src/mobile/index.ts`, which imports
 `expo-router/entry`. The screen routes live in `src/mobile/src/app/`:
 
 - `index.tsx`: Home, local rep counts and navigation.
-- `record.tsx`: camera permission, five-second recording, saving and retry.
+- `record.tsx`: camera permission, optional countdown, 5/10/15-second recording, saving and retry.
 - `library.tsx`: previously saved recordings with readable dates and play actions.
 - `rep/[name].tsx`: local playback resolved from a saved file name.
 
@@ -18,7 +18,7 @@ connection, new storage format, deletion or automatic upload was added.
 ## Progress and transitions
 
 The football moves along a green line. During capture, 0–100% represents elapsed
-time in the five-second rep window, not analysis quality, upload progress or bytes
+time in the selected rep window, not analysis quality, upload progress or bytes
 saved. Early stop moves directly into saving. Saving/loading durations are unknown,
 so those states animate the ball without showing a percentage. A completed save
 shows 100% only after the existing save and refresh operations finish.
@@ -56,6 +56,52 @@ npx expo start --go --clear
 Expo Go still needs the development server for loading the project. These UI
 changes do not create a standalone installation or host the analysis backend.
 
+## Saved-rep titles
+
+Current runtime: Expo SDK 58, upgraded on 26 October 2026 to match the installed
+iPhone Expo Go. The SDK 57 configuration snapshot and prior dependencies are
+retained under `.expo/` and excluded from Metro. No phone recordings or storage
+formats were changed by the upgrade. TypeScript, lint, iOS export and Expo Doctor
+(20/20) passed; the phone still needs the final runtime check.
+
+Open Saved Reps, choose a clip and tap **Add title & notes** (or **Edit title & notes**).
+Save a title of up to 80 characters and optional notes of up to 500 characters.
+Notes are the athlete's own observations, not SCAN coaching conclusions.
+The title appears in playback and the library,
+alongside the original recording date. Cancel discards edits; saving a blank
+title restores the default label. Titles are stored locally beside the clips;
+the video filenames and playback paths stay unchanged.
+
+Phone check: rename an older clip, return to the library, close/reopen Expo Go
+and confirm the title persists and the video still plays. Then check Cancel,
+changing a title a second time, and clearing it. Restart stable Metro after edits
+before testing.
+
+## Countdown, recording length and export
+
+On Record, choose a 5-, 10- or 15-second capture and an Off, 3- or 5-second
+countdown. Defaults are 5-second recording and 3-second countdown for each visit.
+Choices are locked during countdown, recording and saving. Cancel countdown
+returns to Ready without making a clip. Backgrounding or leaving the camera screen
+cancels any pending countdown; returning must never start a delayed recording.
+Early Stop & save still works. The progress percentage measures recording time only.
+
+On a saved rep's playback page, **Export video** opens the native share sheet
+using `expo-sharing` (included in Expo Go for SDK 58). Choose Save Video or
+Save to Files when available. This exports the original MOV/MP4, keeps the
+original in SCAN, and does not embed titles/notes in the exported file. Closing
+the share sheet is not reported as a successful export.
+
+Phone checks after restarting Metro:
+
+1. Test all three durations, including early Stop & save and a second rep.
+2. Cancel a countdown, then confirm no recording appears after waiting.
+3. Background during a countdown; return and confirm Ready rather than Recording.
+4. Add/edit/clear notes, cancel an edit, and reopen the app to check persistence.
+   Confirm older title-only reps and videos still work.
+5. Export to Files and play the copy; also cancel export and confirm no false
+   success message. Confirm SCAN's original clip remains playable.
+
 ## Windows TreeFS watcher crash
 
 If Metro exits with `TreeFS: Failed to make parent directory entry`, that failure
@@ -69,7 +115,7 @@ Use the opt-in stable preview to bypass the watcher:
 npm run start:stable
 ```
 
-This uses Expo CLI's CI mode (`watch: false` in the installed SDK 57 CLI). It prints
+This uses Expo CLI's CI mode to disable file watching. It prints
 LAN URLs for Expo Go because CI mode has no interactive QR menu. Choose the Wi-Fi
 address reachable from your phone. Fully close/reopen Expo Go after restarting.
 
