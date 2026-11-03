@@ -10,6 +10,7 @@ import { RepExport } from '../../../components/rep-export';
 import { repDate, useReps } from '../../../lib/rep-store';
 import { ui } from '../../../lib/theme';
 import type { Rep } from '../../../lib/reps';
+import { RepAnalysis } from '../../../components/rep-analysis';
 
 function Player({ rep }: { rep: Rep }) {
   const player = useVideoPlayer(rep.uri);
@@ -39,8 +40,9 @@ export default function Replay() {
         <RepTitleEditor key={rep.name} rep={rep} />
         <Player rep={rep} />
         <RepExport key={`export-${rep.name}`} rep={rep} />
+        <RepAnalysis key={`analysis-${rep.name}`} rep={rep} />
         <View style={ui.card}><Text style={ui.badge}>SAVED ON THIS PHONE</Text>
-          <Text style={ui.body}>Review your movement at your own pace. Coaching analysis is not connected yet.</Text></View>
+          <Text style={ui.body}>Review your movement at your own pace, or use backend analysis above.</Text></View>
       </> : <Text style={ui.error}>This rep is not available in your saved library.</Text>}
       <Action title="Back to saved reps" secondary onPress={() => router.canGoBack() ? router.back() : router.replace('/library')} />
     </ScrollView>
