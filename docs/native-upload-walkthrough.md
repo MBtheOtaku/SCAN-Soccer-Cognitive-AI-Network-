@@ -62,6 +62,8 @@ Create `C:\Users\Matthew Bui\OneDrive\SCAN\src\mobile\lib\backend.ts`:
 ```ts
 import type {} from 'expo/types';
 import * as FS from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
+import { fetch } from 'expo/fetch';
 import type { Rep } from './reps';
 
 export type ReportSection = { label: string; text: string };
@@ -138,11 +140,8 @@ export async function analyseRep(rep: Rep, signal: AbortSignal): Promise<Analysi
     throw new Error('This local recording is unavailable. Try playing it first.');
   }
   const form = new FormData();
-  // React Native accepts a local-file descriptor as a multipart file part.
-  form.append('video', {
-    uri: rep.uri, name: rep.name,
-    type: rep.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4',
-  } as unknown as Blob);
+  // SDK 58's Expo fetch needs a File/Blob, not a legacy { uri, name, type } object.
+  form.append('video', new File(rep.uri), rep.name);
   form.append('goal_setup', 'null');
   // Let fetch supply the multipart boundary; do not set Content-Type yourself.
   const data = await request('/analyze', { method: 'POST', body: form }, signal, 600_000);
@@ -363,5 +362,6 @@ Make sure private HTTPS 8443 still forwards to `http://localhost:8081` in
 ## Documentation used
 
 - https://docs.expo.dev/versions/v58.0.0/sdk/filesystem-legacy/
+- https://docs.expo.dev/versions/v58.0.0/sdk/filesystem/#uploading-files-using-expofetch
 - https://reactnative.dev/docs/network
 - Existing `src/backend/api/main.py` and the website's report rendering.

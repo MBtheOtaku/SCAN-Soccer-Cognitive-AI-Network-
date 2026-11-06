@@ -94,7 +94,7 @@ class SituatedState:
 
     # General confidence in environment/outcome reasoning.
     environment_confidence: Optional[float]
-    
+
     # -----------------------------------------------------
     # Player history
     # -----------------------------------------------------
@@ -108,6 +108,8 @@ class SituatedState:
 
     # Later this can be determined from multiple reps.
     recent_improvement: Optional[bool]
+    # Optional for compatibility with existing callers and saved states.
+    strike_window: Optional[dict] = None
 
     # -----------------------------------------------------
     # Utility

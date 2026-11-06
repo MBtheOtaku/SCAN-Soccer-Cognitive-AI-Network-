@@ -3,12 +3,8 @@ test_controller.py
 Basic unit tests for the SCAN decision loop. Run with: pytest tests/
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from player_state import PlayerState, RepFeatures
-from controller import decide
+from src.backend.player_state import PlayerState, RepFeatures
+from src.backend.controller import decide
 
 
 def test_hazard_override():

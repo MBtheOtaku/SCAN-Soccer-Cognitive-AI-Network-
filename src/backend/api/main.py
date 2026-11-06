@@ -5,11 +5,14 @@ import uuid
 import json
 import os
 import base64
+import logging
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.backend.pose_mvp.scan_pose_mvp_v2 import analyze
 
@@ -44,6 +47,21 @@ app = FastAPI(
     description="Backend API for the Soccer Cognitive AI Network",
     version="0.1.0",
 )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def log_upload_parse_error(request, exc):
+    if (
+        request.url.path == "/analyze"
+        and exc.status_code == 400
+        and exc.detail == "There was an error parsing the body"
+    ):
+        cause = exc.__cause__ or exc.__context__
+        logging.getLogger("uvicorn.error").error(
+            "SCAN video upload could not be parsed before analysis started.",
+            exc_info=(type(cause), cause, cause.__traceback__) if cause else None,
+        )
+    return await http_exception_handler(request, exc)
 
 
 app.add_middleware(

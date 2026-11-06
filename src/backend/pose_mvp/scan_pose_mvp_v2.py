@@ -46,6 +46,11 @@ from src.backend.coaching_report import (
 from src.backend.llm_coaching import (
     refine_coaching_report_with_llm,
 )
+
+from src.backend.strike_window import (
+    build_strike_window,
+    describe_strike_window,
+)
 # Load MediaPipe dynamically so static analysis does not require its optional
 # package metadata to be installed in the editor's Python environment.
 mp = importlib.import_module("mediapipe")
@@ -1067,6 +1072,12 @@ def analyze(
         rep_id=1,
     )
 
+    situated_state.strike_window = build_strike_window(
+        metrics=metrics,
+        strike_frame=summary.probable_strike_frame,
+        fps=fps,
+        total_frames=summary.total_frames,
+    )
     # ---------------------------------------------------------
     # Jev shadow judgements
     # ---------------------------------------------------------
@@ -1098,6 +1109,15 @@ def analyze(
             deterministic_report=deterministic_coaching_report,
         )
     )
+    
+    # Add an exact measurement note after synthesis so it survives both
+    # external-service failures and language rewriting. Keep it out of speech.
+    measurement_note = describe_strike_window(situated_state.strike_window)
+    if measurement_note:
+        coaching_report.confidence_note = " ".join(
+            text for text in (coaching_report.confidence_note, measurement_note)
+            if text
+        )
 
     print(
         "Coaching synthesis: "

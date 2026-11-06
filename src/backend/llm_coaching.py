@@ -76,6 +76,9 @@ def _build_evidence_packet(
             "recent_improvement": (
                 situated_state.recent_improvement
             ),
+            "strike_window": (
+                situated_state.strike_window
+            ),
         },
 
         "jev_judgements": {
@@ -203,6 +206,12 @@ CRITICAL RULES
 - Do not repeat the same factual observation in more than two sections.
 - Prefer interpretation over repetition: explain why evidence matters
   instead of merely restating what happened.
+- strike_window is descriptive 2D evidence around an estimated ankle-speed
+  peak, not confirmed ball contact. Use phase comparisons only if its status
+  is usable. Otherwise explain the supplied measurement limitations.
+- Changes in torso angles do not by themselves prove instability, poor
+  technique, forward/backward lean or a need for correction. There is no
+  validated ideal angle range supplied here. Do not invent one.
 
 REPORT STYLE
 ------------

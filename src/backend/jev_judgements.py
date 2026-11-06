@@ -206,6 +206,30 @@ def _build_jev_state(
                 "specific technical diagnosis when the "
                 "available perception does not support it."
             ),
+            (
+                "rep.strike_window summarises observations around an estimated "
+                "ankle-speed peak; it does not establish actual ball contact."
+            ),
+            (
+                "Use strike-window phase comparisons only when status is usable. "
+                "Otherwise explain its reasons and do not diagnose from its angles."
+            ),
+            (
+                "Usable means a provisional local data-quality check passed, "
+                "not validated biomechanics, accurate player identity, a calibrated "
+                "confidence probability or confirmed contact timing."
+            ),
+            (
+                "Torso angles and angle ranges are unsigned 2D image measurements. "
+                "Camera motion, perspective, normal action and landmark errors can "
+                "change them. They do not establish forward/backward lean, loss of "
+                "balance, support instability or harmful technique."
+            ),
+            (
+                "There is no validated desirable torso-angle range in this state. "
+                "Do not invent one or prescribe a correction from angle changes alone. "
+                "Missing shot outcome does not itself prove poor technique."
+            ),
         ],
     }
 
