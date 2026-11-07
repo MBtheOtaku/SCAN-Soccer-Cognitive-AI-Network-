@@ -1,0 +1,55 @@
+import numpy as np
+import pytest
+import torch
+from scripts.probe_wasb import config_tree, heatmap_candidates, normalise_rgb, unpack_logits
+
+
+def test_configuration_supports_author_dict_and_attribute_access():
+    cfg = config_tree({"MODEL": {"EXTRA": {"STRIDES": [1, 1]}}})
+    assert cfg.MODEL.EXTRA["STRIDES"] == [1, 1]
+    with pytest.raises(AttributeError):
+        _ = cfg.missing
+
+
+def test_normalisation_preserves_rgb_channel_order():
+    rgb = np.array([[[255, 0, 0]]], dtype=np.uint8)
+    result = normalise_rgb(rgb)
+    assert result.shape == (3, 1, 1)
+    assert result[:, 0, 0] == pytest.approx([(1-.485)/.229, -.456/.224, -.406/.225])
+
+
+def test_weighted_component_is_mapped_back_to_original_coordinates():
+    heatmap = np.zeros((8, 8), dtype=np.float32)
+    heatmap[2, 3], heatmap[2, 4] = .6, .9
+    inverse = np.array([[2, 0, 10], [0, 2, 20]], dtype=np.float32)
+    result = heatmap_candidates(heatmap, inverse, (100, 100))
+    assert len(result) == 1
+    assert result[0]["heatmap_x"] == pytest.approx(3.6)
+    assert result[0]["x"] == pytest.approx(17.2)
+    assert result[0]["y"] == pytest.approx(24)
+
+
+def test_no_heatmap_component_does_not_fabricate_a_ball():
+    assert heatmap_candidates(np.zeros((8, 8), dtype=np.float32),
+                              np.eye(2, 3), (100, 100)) == []
+
+
+def test_outside_original_image_is_not_reported_as_ball():
+    heatmap = np.ones((3, 3), dtype=np.float32)
+    inverse = np.array([[1, 0, -100], [0, 1, -100]], dtype=np.float32)
+    assert heatmap_candidates(heatmap, inverse, (100, 100)) == []
+
+
+def test_nonfinite_heatmaps_are_rejected():
+    with pytest.raises(ValueError):
+        heatmap_candidates(np.full((3, 3), np.nan), np.eye(2, 3), (100, 100))
+
+
+def test_output_shape_and_scale_are_checked():
+    result = unpack_logits({0: torch.zeros((1, 3, 8, 8))}, (1, 3, 8, 8))
+    assert result.shape == (3, 8, 8)
+    assert np.all(result == .5)
+    with pytest.raises(RuntimeError):
+        unpack_logits({1: torch.zeros((1, 3, 8, 8))}, (1, 3, 8, 8))
+    with pytest.raises(RuntimeError):
+        unpack_logits({0: torch.zeros((1, 2, 8, 8))}, (1, 3, 8, 8))

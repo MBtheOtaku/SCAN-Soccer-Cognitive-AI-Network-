@@ -1,0 +1,33 @@
+{
+  "label_source": "User review of original-video frame search",
+  "status": "approximate_reviewed_frame_intervals_not_instrumented_contact",
+  "frame_indexing": "zero_based",
+  "clips": [
+    {
+      "analysis_id": "13a1022c5009",
+      "contact_frame": 79,
+      "first_ball_movement_frame": 80,
+      "reviewed_contact_time_s": 2.633,
+      "reviewed_first_movement_time_s": 2.666,
+      "old_estimate_frame": 60
+    },
+    {
+      "analysis_id": "e9935750581e",
+      "contact_frame": 117,
+      "first_ball_movement_frame": 118,
+      "first_visible_lift_frame": 119,
+      "reviewed_contact_time_s": 3.899,
+      "reviewed_first_movement_time_s": 3.933,
+      "reviewed_first_visible_lift_time_s": 3.966,
+      "old_estimate_frame": 97
+    },
+    {
+      "analysis_id": "96b382d82d92",
+      "contact_frame": 136,
+      "first_ball_movement_frame": 137,
+      "reviewed_contact_time_s": 4.533,
+      "reviewed_first_movement_time_s": 4.566,
+      "old_estimate_frame": 38
+    }
+  ]
+}

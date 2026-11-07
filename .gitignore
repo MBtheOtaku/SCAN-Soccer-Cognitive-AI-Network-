@@ -13,3 +13,5 @@ data/reference-review/
 src/frontend/node_modules/
 src/frontend/.next/
 src/frontend/out/
+
+data/models/

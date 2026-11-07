@@ -1,0 +1,200 @@
+"""Raw WASB heatmap probe, not the complete published evaluation pipeline."""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import html
+import importlib.util
+import json
+import math
+from pathlib import Path
+import re
+import time
+
+import cv2
+import numpy as np
+import torch
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class Config(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+def config_tree(value):
+    if isinstance(value, dict):
+        return Config({k: config_tree(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [config_tree(v) for v in value]
+    return value
+
+
+def load_source(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load source file: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def normalise_rgb(rgb):
+    values = rgb.astype(np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    return ((values - mean) / std).transpose(2, 0, 1)
+
+
+def unpack_logits(output, expected_shape):
+    if not isinstance(output, dict) or 0 not in output:
+        raise RuntimeError("Expected the HRNet scale-0 output dictionary.")
+    logits = output[0]
+    if tuple(logits.shape) != expected_shape or not torch.isfinite(logits).all():
+        raise RuntimeError(f"Unexpected/nonfinite output: {tuple(logits.shape)}")
+    return logits.sigmoid().detach().cpu().numpy()[0]
+
+
+def heatmap_candidates(heatmap, inverse, original_size, threshold=0.5):
+    if (heatmap.ndim != 2 or not np.isfinite(heatmap).all()
+            or heatmap.min() < 0 or heatmap.max() > 1 or not 0 < threshold < 1):
+        raise ValueError("Expected a finite sigmoid heatmap and threshold between zero and one.")
+    width, height = original_size
+    count, labels = cv2.connectedComponents((heatmap > threshold).astype(np.uint8))
+    candidates = []
+    for label in range(1, count):
+        ys, xs = np.where(labels == label)
+        weights = heatmap[ys, xs]
+        mass = float(weights.sum())
+        x = float((xs * weights).sum() / mass)
+        y = float((ys * weights).sum() / mass)
+        original_x, original_y = np.asarray(inverse) @ np.array([x, y, 1.0])
+        if 0 <= original_x < width and 0 <= original_y < height:
+            candidates.append({"x": float(original_x), "y": float(original_y),
+                               "heatmap_x": x, "heatmap_y": y,
+                               "heatmap_mass": mass, "peak_activation": float(weights.max()),
+                               "component_pixels": len(xs)})
+    return sorted(candidates, key=lambda c: c["heatmap_mass"], reverse=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("analysis_id")
+    parser.add_argument("--weights", type=Path, default=ROOT / "data/models/wasb_soccer_best.pth.tar")
+    parser.add_argument("--source-dir", type=Path, default=ROOT / "data/models/WASB-SBDT")
+    parser.add_argument("--start-frame", type=int, required=True)
+    parser.add_argument("--groups", type=int, default=1)
+    args = parser.parse_args()
+    if (not re.fullmatch(r"[0-9a-f]{12}", args.analysis_id)
+            or args.start_frame < 0 or not 1 <= args.groups <= 10):
+        parser.error("Use a valid analysis ID, nonnegative start frame and 1–10 groups.")
+    required = [args.source_dir / name for name in
+                ("src/models/hrnet.py", "src/utils/image.py", "src/configs/model/wasb.yaml")]
+    for path in [args.weights, *required]:
+        if not path.is_file():
+            parser.error(f"Missing file: {path}")
+    cfg = config_tree(yaml.safe_load(required[2].read_text()))
+    if (cfg.frames_in != 3 or cfg.frames_out != 3 or cfg.out_scales != [0]
+            or cfg.rgb_diff or (cfg.inp_width, cfg.inp_height) != (512, 288)
+            or (cfg.out_width, cfg.out_height) != (512, 288)):
+        raise RuntimeError("Unexpected WASB configuration; do not guess preprocessing.")
+    architecture = load_source(required[0], "scan_wasb_hrnet")
+    image_utils = load_source(required[1], "scan_wasb_image")
+    model = architecture.HRNet(cfg).cpu().eval()
+    # Fail explicitly if a legacy checkpoint needs unsupported pickle objects.
+    # Do not silently switch to unrestricted checkpoint loading.
+    checkpoint = torch.load(args.weights, map_location="cpu", weights_only=True)
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise RuntimeError("Expected official checkpoint with model_state_dict.")
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    originals = list((ROOT / "data/input").glob(args.analysis_id + ".*"))
+    if len(originals) != 1:
+        raise RuntimeError("Expected exactly one original recording for the analysis ID.")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    out = ROOT / "data/reference-review/wasb" / args.analysis_id / stamp
+    out.mkdir(parents=True, exist_ok=False)
+    cap = cv2.VideoCapture(str(originals[0]))
+    if not cap.isOpened():
+        raise RuntimeError("Cannot open original recording.")
+    reports, cards = [], []
+    started = time.perf_counter()
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        if not math.isfinite(fps) or fps <= 0:
+            raise RuntimeError("Invalid video FPS.")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.start_frame)
+        for group in range(args.groups):
+            frames = []
+            for _ in range(3):
+                ok, frame = cap.read()
+                if not ok:
+                    raise RuntimeError("Incomplete three-frame group; do not pad with fake/repeated frames.")
+                frames.append(frame)
+            height, width = frames[0].shape[:2]
+            if any(frame.shape != frames[0].shape for frame in frames):
+                raise RuntimeError("Frame sizes changed inside the sequence.")
+            centre = np.array([width / 2, height / 2], dtype=np.float32)
+            scale = float(max(width, height))
+            transform = image_utils.get_affine_transform(centre, scale, 0, [512, 288])
+            inverse = image_utils.get_affine_transform(centre, scale, 0, [512, 288], inv=1)
+            inputs = [cv2.warpAffine(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), transform,
+                                    (512, 288), flags=cv2.INTER_LINEAR) for frame in frames]
+            batch = np.concatenate([normalise_rgb(rgb) for rgb in inputs], axis=0)[None]
+            with torch.inference_mode():
+                heatmaps = unpack_logits(model(torch.from_numpy(np.ascontiguousarray(batch))), (1, 3, 288, 512))
+            for offset, (frame, rgb, heatmap) in enumerate(zip(frames, inputs, heatmaps)):
+                frame_idx = args.start_frame + group * 3 + offset
+                candidates = heatmap_candidates(heatmap, inverse, (width, height))
+                annotated = frame.copy()
+                for candidate in candidates:
+                    point = round(candidate["x"]), round(candidate["y"])
+                    cv2.circle(annotated, point, 10, (0, 255, 255), 2)
+                stem = f"frame-{frame_idx}"
+                previews = [(stem + ".jpg", annotated),
+                            (stem + "-input.png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)),
+                            (stem + "-heatmap.png", cv2.applyColorMap(np.uint8(heatmap * 255), cv2.COLORMAP_JET))]
+                for name, image in previews:
+                    if not cv2.imwrite(str(out / name), image):
+                        raise RuntimeError("Preview write failed; check storage.")
+                np.save(out / (stem + "-heatmap.npy"), heatmap)
+                report = {"frame": frame_idx, "time_s": frame_idx / fps,
+                          "maximum_activation": float(heatmap.max()), "candidates": candidates}
+                reports.append(report)
+                details = html.escape(json.dumps(report, indent=2))
+                cards.append(f'<section><h2>Frame {frame_idx}</h2><div class="images">'
+                             f'<img class="original" src="{stem}.jpg" alt="Original with candidates">'
+                             f'<div><p>Actual model input</p><img src="{stem}-input.png">'
+                             f'<p>Position heatmap</p><img src="{stem}-heatmap.png"></div></div>'
+                             f'<pre>{details}</pre></section>')
+                print(f'Frame {frame_idx}: candidates {len(candidates)}, peak activation {heatmap.max():.4f}', flush=True)
+    finally:
+        cap.release()
+    metadata = {"experiment": "CPU raw WASB three-frame heatmaps, no published online tracker",
+                "analysis_id": args.analysis_id, "frames": reports,
+                "weights_sha256": hashlib.sha256(args.weights.read_bytes()).hexdigest(),
+                "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in required},
+                "torch": torch.__version__, "elapsed_s": time.perf_counter() - started,
+                "threshold": 0.5, "normalisation": "RGB ImageNet mean/std",
+                "timestamp_method": "frame_index_divided_by_fps_not_verified_pts",
+                "limitations": ["Candidates and activations are not verified identity or calibrated probabilities.",
+                                "Three-frame offline context includes later frames; not a causal live detector.",
+                                "No trajectory smoothing, shot classification or coaching integration.",
+                                "Author affine preprocessing may crop parts of portrait recordings; inspect model input."]}
+    (out / "results.json").write_text(json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8")
+    page = '''<!doctype html><meta charset="utf-8"><title>WASB frame probe</title>
+    <style>body{font:16px system-ui;background:#09110c;color:#eef7f0;padding:24px}
+    .images{display:flex;flex-wrap:wrap;gap:20px}img{max-width:100%}
+    .original{max-width:480px;object-fit:contain}pre{white-space:pre-wrap}section{margin-bottom:40px}</style>
+    <h1>Raw WASB candidates</h1><p>Yellow circles: heatmap components, not confirmed balls or contact.
+    Check whether the real ball appears in the actual model input before judging a miss.
+    Heatmap activation is not a calibrated accuracy score.</p>'''
+    (out / "index.html").write_text(page + ''.join(cards), encoding="utf-8")
+    print(f"Review: {out / 'index.html'}")
+
+
+if __name__ == "__main__":
+    main()
