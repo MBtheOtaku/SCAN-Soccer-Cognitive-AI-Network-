@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SCAN ball labels</title>
+<style>
+body{font:16px system-ui;background:#09120c;color:#ecf5ed;margin:20px;max-width:1100px}
+button,input{font:inherit;margin:4px;padding:9px}button{cursor:pointer}button:focus{outline:3px solid #a8fb89}
+canvas{display:block;max-width:100%;height:auto;max-height:72vh;touch-action:none;background:#14231a;cursor:crosshair}
+#status{color:#a8fb89;min-height:28px}p{max-width:850px} .warning{color:#ffd48a}
+</style>
+<h1>SCAN · Ball labels</h1>
+<p>Drag a tight box around the actual visible ball. Include the visible blur if its location is clear.
+If hidden, ambiguous, or too small to locate, choose <b>Uncertain / hidden</b>.
+Use <b>Ball absent</b> only when no ball is visible anywhere in the image.</p>
+<div><button id="prev">← Previous</button><button id="next">Next →</button>
+<button id="absent">Ball absent</button><button id="uncertain">Uncertain / hidden</button><button id="clear">Clear</button></div>
+<div><button id="save">Download labels</button><label>Resume from labels JSON <input type="file" id="load" accept=".json"></label></div>
+<p class="warning">Download before closing. Keep the downloaded JSON; browser storage is not used.</p>
+<div id="status" role="status"></div><canvas id="canvas"></canvas>
+<script>
+const manifest=__MANIFEST__;
+const canvas=document.getElementById('canvas'), ctx=canvas.getContext('2d');
+const status=document.getElementById('status'), image=new Image();
+let index=0, dirty=false, ready=false, drag=null;
+let rows=manifest.frames.map(f=>({frame:f.frame,state:'unreviewed',box:null}));
+function draw(){
+ if(!ready)return;
+ ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0);
+ const box=drag?[Math.min(drag.x,drag.ex),Math.min(drag.y,drag.ey),Math.max(drag.x,drag.ex),Math.max(drag.y,drag.ey)]:rows[index].box;
+ if(box){ctx.strokeStyle='#b0ff82';ctx.lineWidth=2;ctx.strokeRect(box[0],box[1],box[2]-box[0],box[3]-box[1]);}
+ const f=manifest.frames[index], done=rows.filter(r=>r.state!=='unreviewed').length;
+ status.textContent=`${manifest.clip_id} · ${index+1}/${rows.length} · frame ${f.frame} · ${(f.time_s).toFixed(3)}s (FPS approximation) · ${rows[index].state} · ${done} reviewed${dirty?' · download pending':''}`;
+}
+function show(){
+ ready=false;drag=null;const f=manifest.frames[index];
+ image.onload=()=>{canvas.width=f.width;canvas.height=f.height;ready=true;draw();};
+ image.onerror=()=>{status.textContent='Image could not load; keep this page beside its frames folder.';};
+ image.src=f.image;
+}
+function move(delta){index=Math.max(0,Math.min(rows.length-1,index+delta));show();}
+document.getElementById('prev').onclick=()=>move(-1);
+document.getElementById('next').onclick=()=>move(1);
+function mark(state){rows[index]={frame:manifest.frames[index].frame,state,box:null};dirty=true;draw();}
+for(const [id,state] of [['absent','absent'],['uncertain','uncertain'],['clear','unreviewed']])document.getElementById(id).onclick=()=>mark(state);
+function point(e){const r=canvas.getBoundingClientRect();return {x:Math.max(0,Math.min(canvas.width,(e.clientX-r.left)*canvas.width/r.width)),y:Math.max(0,Math.min(canvas.height,(e.clientY-r.top)*canvas.height/r.height))};}
+canvas.onpointerdown=e=>{if(!ready)return;const p=point(e);drag={...p,ex:p.x,ey:p.y};canvas.setPointerCapture(e.pointerId);draw();};
+canvas.onpointermove=e=>{if(drag){const p=point(e);drag.ex=p.x;drag.ey=p.y;draw();}};
+canvas.onpointerup=e=>{if(!drag)return;const p=point(e),box=[Math.min(drag.x,p.x),Math.min(drag.y,p.y),Math.max(drag.x,p.x),Math.max(drag.y,p.y)];drag=null;if(box[2]>box[0]&&box[3]>box[1]){rows[index]={frame:manifest.frames[index].frame,state:'visible',box};dirty=true;}draw();};
+canvas.onpointercancel=()=>{drag=null;draw();};
+document.getElementById('save').onclick=()=>{
+ const payload={schema:1,clip_id:manifest.clip_id,source_sha256:manifest.source_sha256,annotations:rows};
+ const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+ const a=document.createElement('a');a.href=url;a.download=manifest.clip_id+'-labels.json';a.click();
+ setTimeout(()=>URL.revokeObjectURL(url),10000);dirty=false;draw();
+};
+document.getElementById('load').onchange=async e=>{
+ try{
+  if(dirty&&!confirm('Replace unsaved labels with this file?'))return;
+  const data=JSON.parse(await e.target.files[0].text());
+  if(data.schema!==1||data.clip_id!==manifest.clip_id||data.source_sha256!==manifest.source_sha256||!Array.isArray(data.annotations))throw Error('Wrong recording or label format.');
+  const ids=new Set(manifest.frames.map(f=>f.frame)), seen=new Set();
+  for(const row of data.annotations){
+   if(!ids.has(row.frame)||seen.has(row.frame)||!['visible','absent','uncertain','unreviewed'].includes(row.state))throw Error('Invalid or duplicate annotation.');
+   seen.add(row.frame);const f=manifest.frames.find(f=>f.frame===row.frame),b=row.box;
+   if(row.state==='visible'){
+    if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite)||!(0<=b[0]&&b[0]<b[2]&&b[2]<=f.width&&0<=b[1]&&b[1]<b[3]&&b[3]<=f.height))throw Error('Invalid ball box.');
+   }else if(b!==null)throw Error('Unexpected ball box.');
+  }
+  const byFrame=new Map(data.annotations.map(r=>[r.frame,r]));
+  rows=manifest.frames.map(f=>byFrame.get(f.frame)||{frame:f.frame,state:'unreviewed',box:null});dirty=false;draw();
+ }catch(err){alert('Cannot load labels: '+err.message);}
+ e.target.value='';
+};
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(e.key==='ArrowRight')move(1);if(e.key==='ArrowLeft')move(-1);});
+show();
+</script></html>

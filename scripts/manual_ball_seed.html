@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SCAN · Select your ball</title>
+<style>body{background:#09120c;color:#eef5ee;font:17px system-ui;margin:20px}canvas{max-width:100%;height:auto;max-height:72vh;touch-action:none;cursor:crosshair}button,input{font:inherit;padding:10px;margin:6px}#status{color:#b0ff82}</style>
+<h1>Select the ball to follow</h1><p>Tap the ball to place a square, adjust its size, or drag a tight rectangle around it. Confirm that the selected object is your ball.</p>
+<label>Tap box size (original pixels) <input id="size" type="number" value="24" min="4" max="200"></label>
+<button id="clear">Clear selection</button><button id="save" disabled>Confirm ball &amp; download seed</button>
+<p id="status">Select the actual ball. This identifies an initial target; it does not calibrate camera geometry.</p><canvas id="canvas"></canvas>
+<p>This offline prototype does not start recording or establish reliable tracking. Tracking must still be tested on later frames.</p>
+<script>
+const seed=__SEED__,canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d'),image=new Image();
+const status=document.getElementById('status'),save=document.getElementById('save');let box=null,drag=null,ready=false;
+function draw(){if(!ready)return;ctx.drawImage(image,0,0);if(box){ctx.strokeStyle='#b0ff82';ctx.lineWidth=2;ctx.strokeRect(box[0],box[1],box[2]-box[0],box[3]-box[1]);}save.disabled=!box;}
+function point(e){const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(seed.width,(e.clientX-r.left)*seed.width/r.width)),y:Math.max(0,Math.min(seed.height,(e.clientY-r.top)*seed.height/r.height))};}
+canvas.onpointerdown=e=>{if(!ready)return;drag=point(e);canvas.setPointerCapture(e.pointerId);};
+canvas.onpointermove=e=>{if(!drag)return;const p=point(e);box=[Math.min(drag.x,p.x),Math.min(drag.y,p.y),Math.max(drag.x,p.x),Math.max(drag.y,p.y)];draw();};
+canvas.onpointerup=e=>{if(!drag)return;const p=point(e);if(Math.hypot(p.x-drag.x,p.y-drag.y)<3){const n=Number(document.getElementById('size').value);if(!Number.isFinite(n)||n<4||n>200){drag=null;return;}box=[Math.max(0,p.x-n/2),Math.max(0,p.y-n/2),Math.min(seed.width,p.x+n/2),Math.min(seed.height,p.y+n/2)];}else{box=[Math.min(drag.x,p.x),Math.min(drag.y,p.y),Math.max(drag.x,p.x),Math.max(drag.y,p.y)];}drag=null;if(box[2]-box[0]<4||box[3]-box[1]<4)box=null;status.textContent=box?'Check this box contains the ball, then confirm.':'Select a box at least four pixels wide and high.';draw();};
+canvas.onpointercancel=()=>{drag=null;};
+document.getElementById('clear').onclick=()=>{box=null;draw();};
+save.onclick=()=>{if(!box)return;const url=URL.createObjectURL(new Blob([JSON.stringify({...seed,box},null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=seed.clip_id+'-seed.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);status.textContent='Seed download requested. Keep this JSON for the tracking command.';};
+image.onload=()=>{canvas.width=seed.width;canvas.height=seed.height;ready=true;draw();};image.onerror=()=>{status.textContent='Seed image could not load.';};image.src='frame.jpg';
+</script></html>

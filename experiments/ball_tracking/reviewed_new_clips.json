@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "label_type": "approximate_ball_center_px",
+  "method": "assistant visually marked original full-resolution frames without tracker overlays; fixed frame spacing across each 30-frame path",
+  "clips": {
+    "e3949580d0f2": {
+      "source_sha256": "8c136cc1ea821c830950f052e2f73165572ceaecc4fac9db3ef0f6f09184802a",
+      "source_name": "e3949580d0f2.mov",
+      "annotations": [
+        {"frame": 107, "center": [340, 752]},
+        {"frame": 111, "center": [384, 694]},
+        {"frame": 115, "center": [414, 655]},
+        {"frame": 119, "center": [434, 637]},
+        {"frame": 123, "center": [450, 624]},
+        {"frame": 127, "center": [461, 620]},
+        {"frame": 131, "center": [466, 620]},
+        {"frame": 135, "center": [459, 623]}
+      ]
+    },
+    "735e17f02bd5": {
+      "source_sha256": "eb072885264adc825bd627d228f8071831180299e25434a35973d9ccc5caa1ac",
+      "source_name": "735e17f02bd5.mov",
+      "annotations": [
+        {"frame": 85, "center": [386, 757]},
+        {"frame": 89, "center": [321, 652]},
+        {"frame": 93, "center": [279, 591]},
+        {"frame": 97, "center": [249, 553]},
+        {"frame": 101, "center": [228, 532]},
+        {"frame": 105, "center": [213, 521]},
+        {"frame": 109, "center": [202, 520]},
+        {"frame": 113, "center": [192, 525]}
+      ]
+    },
+    "675e44d940ff": {
+      "source_sha256": "560706a458b1cc3f81efab208fdff0c74793963a2566ff1d7e160910f3979334",
+      "source_name": "675e44d940ff.mov",
+      "annotations": [
+        {"frame": 49, "center": [590, 459]},
+        {"frame": 53, "center": [461, 410]},
+        {"frame": 57, "center": [372, 385]},
+        {"frame": 61, "center": [306, 374]},
+        {"frame": 65, "center": [257, 373]},
+        {"frame": 69, "center": [220, 382]},
+        {"frame": 73, "center": [190, 393]},
+        {"frame": 77, "center": [164, 411]}
+      ]
+    }
+  }
+}
