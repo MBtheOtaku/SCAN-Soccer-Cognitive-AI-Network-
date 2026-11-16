@@ -5,9 +5,10 @@ The mobile app and backend are operational prototypes; continuous ball localisat
 identity through contact/flight, and shot outcome are not validated.
 
 The latest hand-seeded motion and appearance experiment is documented in the
-[offline identity pilot](../experiments/ball_tracking/README.md). It improves
-two recently reviewed failure cases, but an older contact-seeded clip remains
-poor and all paths still need independent identity validation. It has not
+[offline identity pilot](../experiments/ball_tracking/README.md). Its
+appearance cue improves a nighttime dribble but misroutes two contact-seeded
+shots; a motion-only comparison recovers those reviewed shot positions.
+All paths still need independent identity validation. The pilot has not
 been connected to app analysis or coaching.
 
 ## Current evidence

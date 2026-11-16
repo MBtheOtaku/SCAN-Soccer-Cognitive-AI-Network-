@@ -201,15 +201,16 @@ python -m pytest tests/test_ball_motion_appearance.py tests/test_ball_motion_rel
 Review the generated overlay and `scores.json` at
 `data/reference-review/beam-motion-track/identity-pilot/`. Green is the
 manually marked ball, blue the frozen positive-change baseline, and yellow
-the new candidate. Raw distance to **sparse** reviewed centres is:
+the appearance candidate. The magenta cross is pooled positive/negative
+motion without appearance. Raw distance to **sparse** reviewed centres is:
 
-| Clip | Baseline within 20 px | Candidate within 20 px |
-| --- | ---: | ---: |
-| `36bf848f409c` (day shot) | 5/10 | 10/10 |
-| `7de88d94f23c` (night dribble) | 0/5 | 5/5 |
-| `e3949580d0f2` (night shot) | 7/8 | 7/8 |
-| `735e17f02bd5` (night shot) | 8/8 | 7/8 |
-| `675e44d940ff` (day flight) | 8/8 | 8/8 |
+| Clip | Baseline within 20 px | Appearance within 20 px | Pooled motion within 20 px |
+| --- | ---: | ---: | ---: |
+| `36bf848f409c` (day shot) | 5/10 | 10/10 | 10/10 |
+| `7de88d94f23c` (night dribble) | 0/5 | 5/5 | 0/5 |
+| `e3949580d0f2` (night shot) | 7/8 | 7/8 | 7/8 |
+| `735e17f02bd5` (night shot) | 8/8 | 7/8 | 8/8 |
+| `675e44d940ff` (day flight) | 8/8 | 8/8 | 8/8 |
 
 The current-frame check improves the two recent failure cases but still
 misses one early mark in `735e17f02bd5` and follows net motion at the last
@@ -229,3 +230,96 @@ order listed in `pilot_motion_track.py`. The poor 6/17 result on
 `13a1022c5009` shows that this appearance profile does not transfer reliably
 to a seed placed at the contact frame. These clips informed the earlier
 motion pilot and are not fresh holdouts.
+
+## Contact-seed regression audit
+
+`contact_regression_audit.py` checks raw motion proposals against the marked
+ball in `13a1022c5009`; it does not use the marks to guide tracking. A nearby
+brightening proposal exists on every reviewed visible frame from 80 through
+100 (1–9 px from the marked centre). The appearance-aware path instead
+diverges after contact. Removing only the six-frame appearance gate does not
+fix it: both appearance variants reach 6/17 within 20 px, whereas pooled
+motion without appearance reaches 17/17. Positive motion plus appearance
+performs worse at 1/17. The seed-patch appearance cost, rather than missing
+motion candidates, is the main failure in this case.
+
+The six earlier development clips yield 92/93 reviewed positions within
+20 px for pooled signed motion without appearance, versus 75/93 for the
+appearance candidate. On the five newer clips, pooled motion matches the
+appearance candidate on three shots, improves `735e17f02bd5` by one mark,
+but fails all five reviewed marks in the night dribble where appearance helps.
+This supports keeping motion-only and appearance-aware paths as separate
+offline hypotheses, with a capture-condition or track-state decision still
+to be validated. It does **not** justify selecting whichever path is closest
+to labels per clip at runtime. The labelled clips were used to explore both
+settings, and neither path establishes identity, contact, goal entry or speed.
+
+## Stationary-shot review on an exported rep
+
+Use `stationary_shot_review.py` to run the motion-only candidate on any local
+video without a labels file. First inspect the original video and identify
+the contact frame, a tight ball box in that frame, and an approximate goal
+centre, all in **original video pixel coordinates**. For the already reviewed
+`13a1022c5009` example:
+
+```powershell
+python -m experiments.ball_tracking.stationary_shot_review data/input/13a1022c5009.mov --contact-frame 78 --ball-box 250 749 287 783 --goal-center 260 610
+```
+
+The command prints a new `data/reference-review/beam-motion-track/stationary-shot/`
+review page and saves `trajectory.json` beside it. Yellow marks the candidate;
+a red cross marks uncertainty. The output is a visual debugging aid, not a
+verified shot result. This path requires a manually marked contact frame and
+ball, a manually chosen goal centre, and a stationary camera. It is **not**
+connected to mobile uploads, Jev, goal outcomes, or coaching. The next step
+is to score newly exported stationary shots through contact and flight before
+designing an app seed workflow or replacing the production tracker.
+
+For a **new, distinct stationary-shot recording**, keep the tracker output
+closed until the original video has been reviewed and the ball boxes saved.
+Place a copy of the exported clip in `data/input/`, find the contact frame in
+the original video, then prepare a dense annotation window of at least 30
+frames after contact:
+
+```powershell
+python -m scripts.ball_dataset prepare --source data/input/NEW_CLIP.mov --stride 10 --dense-start CONTACT_FRAME --dense-end END_FRAME
+```
+
+Use the generated `index.html` to mark the target ball on **every** frame from
+contact + 1 through contact + 30; mark occluded frames uncertain rather than
+guessing. Download and save its `labels.json` as explained in
+`docs/ball-labelling-guide.md`. Only then run `stationary_shot_review.py`
+with the contact-frame ball box and goal centre read from the original image.
+Finally score the saved path:
+
+```powershell
+python -m experiments.ball_tracking.score_stationary_shot PATH_TO_TRAJECTORY_JSON PATH_TO_LABELS_JSON
+```
+
+The scorer checks the source hash and requires a complete dense review window.
+Its 20-pixel proximity count includes lost frames in the denominator and
+reports provisional observed positions separately. It does not establish
+ball identity or a confirmed goal. Do not adjust tracker settings using this
+clip and then call the same clip an independent test.
+
+An end-to-end check on the already reviewed `13a1022c5009` frames 79–95
+returned 16/16 visible positions within 20 px, but 0/16 as provisional
+observed positions. Frame 79 is marked uncertain in the manual labels; the
+tracker coasts it, so the current sticky reliability warning marks the later
+path uncertain. This illustrates why raw position proximity alone cannot
+authorize a shot outcome or coaching claim.
+
+An extended, **development-only** check on the existing `IMG_5703.mov`
+stationary shot used the reviewed frame-50 ball box and tracked frames 51–100.
+The motion-only candidate was within 10 px on all 20 visible labelled
+positions through frame 80, including frame 80 in flight. The path then
+diverged near the goal: its errors were 101.6 px at frame 90 and 92.8 px at
+frame 100. Its reliability check became uncertain at frame 83 with reason
+`late_near_goal_motion_jump`, before the two large labelled errors. Of the
+50-frame window, 22 positions have visible labels and frame 63 is unreviewed;
+the rest of the late flight is sparsely labelled. These figures are therefore
+an exploratory sparse-label comparison, **not** a passing result from the
+dense-window scorer or independent validation. The generated review is under
+`data/reference-review/beam-motion-track/stationary-shot/IMG_5703-1ed7f8ca/`.
+Next, investigate late-flight identity near the goal while preserving the
+uncertainty gate; do not infer goal entry or trajectory quality from this path.
