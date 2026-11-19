@@ -323,3 +323,345 @@ dense-window scorer or independent validation. The generated review is under
 `data/reference-review/beam-motion-track/stationary-shot/IMG_5703-1ed7f8ca/`.
 Next, investigate late-flight identity near the goal while preserving the
 uncertainty gate; do not infer goal entry or trajectory quality from this path.
+
+## Six-shot extended development check (2026-11-16)
+
+The same motion-only settings were run for 50 frames on six other shot clips
+already used during development. The first three were seeded at a reviewed
+contact frame; the last three used existing pre-shot seeds. These are sparse
+reviewed-position checks, **not** new holdouts or dense flight validation.
+The first three source files match their annotation SHA-256 hashes.
+
+| Clip | Seed | Reviewed centres within 20 px | Provisional observed hits | First uncertainty |
+| --- | --- | ---: | ---: | --- |
+| `13a1022c5009` | contact | 18/18 | 0 | frame 79, missing proposal |
+| `IMG_5702` | contact | 21/22 | 21 | frame 90, missing proposal |
+| `e9935750581e` | contact | 18/19 | 0 | frame 118, missing proposal |
+| `36bf848f409c` | pre-shot | 10/10 | 10 | frame 85, late near-goal jump |
+| `e3949580d0f2` | pre-shot | 8/8 | 7 | frame 132, missing proposal |
+| `735e17f02bd5` | pre-shot | 8/8 | 8 | none within 50 frames |
+
+The two labelled misses were 98.2 px at `IMG_5702` frame 90 and 22.5 px at
+`e9935750581e` frame 118; both occur at an uncertainty boundary. The 13a
+and e993 paths later return close to sparse labels, but their warnings stay
+sticky because the pilot cannot verify re-identification. The 36bf warning
+falls after its last reviewed position, so its late flight is unscored.
+Even the unflagged 735 path has no reviewed positions after frame 113;
+visual proximity to the goal cannot validate its identity or outcome.
+The [local review](../../data/reference-review/beam-motion-track/multi-shot-check-20261116/index.html)
+and `summary.json` show frame-level results. Across these six clips, 83/85
+reviewed centres were within 20 px, but only 46 were provisional observed
+hits. The sparse, development-selected labels and manual seeds make that
+83/85 figure unsuitable as an accuracy estimate for new shots.
+The reviewed ball box in `IMG_5702` shrinks from roughly 26×28 px at contact
+to 10×16 px at the frame-90 miss, so small apparent size may contribute.
+In `IMG_5703`, the reviewed ball box is still about 15×26 px at its frame-90
+miss. Size alone therefore does not explain both goal-area failures; nearby
+goal structure and motion remain hypotheses to test with denser labels.
+
+## Moving-ball stress check (2026-11-16)
+
+Three other distinct, previously reviewed moving-ball recordings were run for
+50 frames with the same hand-seeded pooled-motion settings. This is a stress
+check outside the stationary-shot target, not independent validation. The
+`96b382d82d92` and `ee73dffd61b5` files match their annotation SHA-256
+hashes. A comparison also ran the existing appearance-aware settings (with
+the previously specified 30-frame gate for the dribble case).
+
+| Clip | Motion-only within 20 px | Appearance within 20 px | Reliability concern |
+| --- | ---: | ---: | --- |
+| `96b382d82d92` | 15/17 | 15/17 | Both paths diverge after early flight; motion flags frame 155, appearance frame 157. |
+| `ee73dffd61b5` | 0/6 | 6/6 | Motion follows the player with no warning; appearance is unflagged on sparse marks. |
+| `7de88d94f23c` | 0/5 | 5/5 | Motion follows a wrong target with no warning; appearance flags uncertainty from frame 42. |
+
+On `96b382d82d92`, motion's two late errors are 255 and 314 px despite
+15 early labelled positions being within about 5 px. On `ee73dffd61b5`
+and `7de88d94f23c`, a 50-frame wrong path is marked provisional throughout.
+Those false-negative reliability decisions are more serious than a missed
+candidate: a wrong trajectory could otherwise look acceptable to later
+layers. The appearance comparison shows a possible cue for moving-ball
+identity, but the 7de path remains uncertain and no labels verify the full
+late flight. Do not route any of these paths into outcome or coaching.
+The generated local review is under
+`data/reference-review/beam-motion-track/moving-shot-stress-20261116/`.
+
+## High-resolution crop feasibility gate (2026-11-16)
+
+Before adding predicted-path crop search or changing the sticky uncertainty
+rule, we checked whether a public soccer-ball detector could detect the ball
+when given an *oracle* crop centred on its manual label. This is an optimistic
+upper-bound diagnostic, not a deployable tracker: inference must not use the
+manual label. The public `martinjolif/yolo-football-ball-detection` checkpoint
+(SHA-256 `fb37942448e7de08745e8aab148d0794f680a738ddd55e5f17abe9ab2d6313fb`)
+was run at 960-pixel input size and 0.05 confidence on nine visible labelled
+frames from four SCAN clips. A candidate counted as a hit when its centre was
+within 20 original-image pixels of the labelled ball centre.
+
+| Input | Ball hits | Interpretation |
+| --- | ---: | --- |
+| Full frame | 1/9 | Missed the selected late-flight and goal-area examples. |
+| 512-pixel oracle crop | 0/9 | Four other detections; no labelled-ball hit. |
+| 256-pixel oracle crop | 0/9 | Fourteen other detections; no labelled-ball hit. |
+
+The local per-frame reports are `data/reference-review/model-comparison-20261116/visionpitch-results.json`
+and `oracle-crop-results.json`. These deliberately difficult, development-selected
+frames do not estimate overall accuracy. The full-frame hit disappearing under
+the tighter crops also shows that zooming can remove useful context. This
+checkpoint is a **no-go** for the proposed crop-search pipeline: more search
+windows would increase candidate volume without demonstrating ball recall.
+Keep the offline tracker and its uncertainty behavior unchanged. A future
+candidate detector must first recover the manually labelled ball in these
+oracle crops while limiting hard-negative detections, then pass a separate
+clip/session-held-out test before temporal re-identification is evaluated.
+
+## SCAN-specific small-detector pilot (2026-11-16)
+
+We fine-tuned the same one-class YOLO11n checkpoint offline on the six-clip
+`export-v3` labels. Four clips from two recording groups formed the training
+split; two daylight clips from one recording group formed validation. The
+validation group has already informed earlier experiments, so it is a
+development split, **not** an untouched test set. All checkpoints and data
+snapshots stay under ignored `data/reference-review/`; no app or production
+tracking path uses them.
+
+The first run used 512-pixel crops (223 positive and 144 empty train crops;
+160 positive and 101 empty validation crops). After three CPU epochs, its
+validation mAP50 was 0.0345. At 0.05 confidence on the fixed oracle-crop
+check, it found 2/7 training balls and 0/2 daylight-validation balls in
+512-pixel crops. Tightening those same oracle crops to 256 pixels found 5/7
+training balls and still 0/2 daylight balls, with 45 other proposals across
+the nine frames. This suggests resolution can help on seen scenes, but does
+not establish usable detection.
+
+A second run built 256-pixel crops (199 positive and 144 empty train crops;
+137 positive and 101 empty validation crops). The baseline detector produced
+false alarms on 22 empty *training* crops; we reviewed their montage and added
+those 22 crops as hard-negative oversamples. After three CPU epochs, validation
+mAP50 was 0.00031 and the fixed 256-pixel oracle check found 0/9 balls at
+0.05 confidence. The baseline checkpoint also found 0/9 under the same
+640-pixel inference settings. This arm is a **no-go**. The 512- and 256-crop
+mAP figures use different datasets and should not be compared as if they were
+the same benchmark.
+
+Reproducible scripts are `evaluate_oracle_crops.py` and
+`mine_hard_negative_crops.py` in this directory. Reports and checkpoints are
+under `data/reference-review/ball-finetune/20261116T082024656866Z/`,
+`data/reference-review/ball-finetune/20261116T084216933323Z/`, and
+`data/reference-review/model-comparison-20261116/`. The hard-negative review
+montage and provenance are in `data/reference-review/ball-crops/20261116-256-hard-v3/`.
+The next detector experiment needs more labelled recording groups, especially
+daylight and late-flight small balls. It must pass an untouched session-held-out
+crop test before predicted-path search and temporal identity checks are worth
+connecting to the app.
+
+## Dense stationary-shot identity check (2026-11-16)
+
+The input folder contains 12 byte-distinct recordings. Nine have reviewed ball
+labels for the current detector pilot; the other three are an indoor ball
+close-up or moving/multi-player shots, so they cannot serve as an untouched
+stationary-shot test. Three additional stationary-shot recordings now have
+contiguous reviewed flight windows. Their label metadata is in `reviewed_labels/`; the
+source videos and frame images remain local under ignored `data/`.
+
+| Clip | Scene | Visible positions within 20 px | Provisional observed hits | First critical failure |
+| --- | --- | ---: | ---: | --- |
+| `36bf848f409c` | Daylight, through goal area | 33/49 | 33/49 | Frame 85: trajectory switches to a goal feature. |
+| `735e17f02bd5` | Night | 41/41 | 41/41 | No labelled failure in this window; one uncertain manual frame is excluded. |
+| `e3949580d0f2` | Night | 38/39 | 25/39 | Missing proposal at frame 132 makes later identity uncertain. |
+| `e9935750581e` | Daylight, shorter window | 15/16 | 0/16 | First post-contact frame lacks a proposal; warning stays sticky. |
+
+These are **manually contact-seeded development cases**, not a deployable
+start-up or independent accuracy estimate. The scorer now reports consecutive
+misses, unsupported runs, and wrong positions accepted without a warning.
+The daylight failure matters more than aggregate proximity: nearby goal motion
+can make an incorrect path look smooth. An experimental abrupt-jump filter
+improved raw proximity on `36bf848f409c` from 33/49 to 37/49, but marked 12
+wrong positions provisional. It was removed rather than weakening the safety
+gate. Reviewed trajectories and scores are under
+`data/reference-review/beam-motion-track/stationary-shot/`.
+
+The earlier dedicated ball checkpoint found **0/18** balls in fixed 384- or
+256-pixel oracle crops from these dense labels. A frozen public COCO YOLO11n
+`sports ball` model found **5/18** in 384-pixel oracle crops. Without access to
+manual ball locations, 384-pixel crops centred on the motion path found only
+**2/18**. A nine-slice search found 12/21 positions on `36bf848f409c`
+frames 80–100, but only 4/16 on the other daylight shot and 7/12 on sampled
+night frames, while proposing many distractors. Slicing improved candidate
+recall in one scene but did not establish ball identity across frames. The
+fixed selections and trajectory references are in `oracle-dense-frames.json`
+and `predicted-*-frames.json`. The latter require regenerating the ignored
+local trajectory reports before use on another machine. Per-frame output is
+under `data/reference-review/model-comparison-20261116/`.
+
+For the next small-model adaptation, `splits-dense-pilot.json` keeps recording
+groups together: eight clips from four groups train, and the already-inspected
+`36bf848f409c` clip is the sole development validation clip. A first one-epoch
+CPU smoke run used Ultralytics `fraction=0.25`; that option takes the first
+alphabetically sorted 235 of 941 training crops and omitted two groups. Its
+near-zero validation score is **invalid as a full-dataset comparison**. The
+script no longer offers that misleading shortcut. The full-data run used all
+941 training crops and 132 validation crops. Its three-epoch development
+validation mAP50 was about 0.756. This crop metric is not a measure of
+end-to-end tracking or a separate-session test. No detector or trajectory
+from this section feeds app coaching or outcome claims.
+
+## Adapted small-ball detector and identity pilot (2026-11-16)
+
+We compared the frozen COCO YOLO11n `sports ball` checkpoint (class 32) with
+a three-epoch adaptation of that checkpoint to SCAN's reviewed 384-pixel crops
+(one `ball` class). The adapted weights and per-frame reports remain in ignored
+`data/reference-review/ball-finetune/20261117T004329962346Z/` and
+`data/reference-review/model-comparison-20261116/`. The fixed 18-frame
+oracle-crop check found the ball in **18/18** adapted frames versus **5/18**
+with the frozen checkpoint. The oracle crops know where the ball is and test
+the detector alone.
+
+With nine overlapping crops centred on the earlier motion track, the adapted
+checkpoint proposed the labelled ball in **49/49** frames of the daylight
+`36bf848f409c` goal-area window, versus **34/49** with the frozen checkpoint.
+It also proposed the ball in **16/16** frames of the shorter daylight
+`e9935750581e` window, versus **4/16** frozen, and **39/39** frames of the
+night `e3949580d0f2` window. It produced extra distractors: 45 non-ball
+proposals in the first daylight window and 29 in the second. Candidate recall
+must not be mistaken for choosing the correct identity.
+
+The offline causal association in `associate_detector_candidates.py` combines
+detection strength with predicted motion and marks a rejected detection as
+missing. On these *saved* proposals it selected the labelled ball in 49/49,
+16/16, and 39/39 frames respectively. A first distance-dominated version
+selected a false ball beside the seed and then lost the trajectory; the
+revised rule is an experimental response to that failure, not a validated
+calibration. Crucially, the saved proposals were searched around an **older
+motion trajectory**. They do not show whether the detector can search around
+its own choices without drifting.
+
+`closed_loop_detector_track.py` tests that stronger question: after a manual
+contact seed it centres the next search on its own predicted position, never
+on a manual label or saved trajectory. Its first development run on
+`36bf848f409c` found and selected the labelled ball in **49/49** reviewed
+frames through the goal area; 60 other proposals were present. The same
+closed-loop check selected the labelled ball in **16/16** frames of the other
+daylight shot and **39/39**, **41/41**, and **16/16** visible frames of three
+night windows, for **161/161** reviewed visible frames total. These windows
+include four training clips and the already-inspected development validation
+clip. Manual starting points were supplied. The count is a within-20-pixel
+comparison against labels; it is **not** a verified identity probability or
+unbiased accuracy estimate.
+
+An exhaustive 384-pixel tiled search on six frames labelled *target ball
+absent* produced proposals on two frames. One night frame had a weak 0.07
+proposal; the daylight frame contained several other soccer balls and five
+ball proposals. Detecting a real *different* ball would still be an identity
+failure for SCAN. This absence check does not simulate a continuous track
+through disappearance. A distinct recording session, multiple-ball cases,
+and a supported/uncertain decision rule are needed before allowing this path
+into SituatedState, outcome evaluation, or coaching. Reports are under
+`data/reference-review/model-comparison-20261116/`.
+
+The linked [YOLO/interpolation walkthrough](https://www.youtube.com/watch?v=t18k3mGVNgQ&t=1584s)
+illustrates a useful distinction: keep detector observations separate from
+positions filled across missing frames. Short-gap interpolation may improve a
+review display after identity is established, but it cannot verify that a
+newly found point after a gap is the same ball. In SCAN, any interpolated
+position must stay marked inferred and must not become shot-outcome evidence.
+
+### Interactive review of saved closed-loop runs
+
+Run `python -m experiments.ball_tracking.render_closed_loop_review` to build
+`data/reference-review/closed-loop-tracker/index.html` from the five saved
+closed-loop reports. This renders existing detections without rerunning the
+model. Yellow marks the selected tracker position; cyan marks the manual
+reference box. The local viewer supports playback, frame stepping, a ball
+close-up, and optional candidate/prediction overlays. It shows only the
+reviewed windows, with manually supplied starting points. Its displayed
+detector score is not a probability that ball identity is correct.
+
+### Unlabelled recording-session check (2026-11-19)
+
+`track_unlabelled_video.py` runs the frozen adapted ball detector and the same
+offline association rule on ordinary video files, without per-frame ball
+labels. It decodes sequentially and processes every frame from one manually
+selected starting ball position through the decoded end of each video. It does
+not re-seed after tracking starts. The current local case list is
+`data/reference-review/new-session-20261119/seeds.json`: nine seeds are on
+frame zero and two deliberately start later, at frames 45 and 15. Those two
+starts omit earlier frames from tracking, even though the videos are decoded
+sequentially. Seed coordinates were chosen by visual inspection before these
+new runs; they are not automatic contact detections.
+
+For a repeatable run, use a **new** output directory each time, because the
+runner refuses to overwrite a prior frozen configuration or report:
+
+```powershell
+python -m experiments.ball_tracking.track_unlabelled_video --cases data/reference-review/new-session-20261119/seeds.json --weights data/reference-review/ball-finetune/20261117T004329962346Z/train/weights/best.pt --output data/reference-review/new-session-20261119/runs-next --threads 8
+python -m experiments.ball_tracking.render_unlabelled_review --reports-dir data/reference-review/new-session-20261119/runs-next --output data/reference-review/new-session-20261119/review-next
+```
+
+The runner records the frozen model hash, fixed settings, and each source-video
+hash in `frozen-config.json`, with a `report.json` and original-frame JPEGs for each
+completed clip. The renderer builds a local interactive `index.html` from
+completed reports, displaying selected detections, a close-up, and optional
+candidate/prediction overlays. Yellow indicates a selected candidate, not
+verified ball identity; predicted positions are not observations. There are
+no manual frame labels or accuracy scores in this check. A selected-detection
+count alone cannot establish correct ball identity, goal crossing, speed,
+curve, or shot outcome. The source exports, reports, and rendered review stay
+under ignored `data/` and do not feed the app, SituatedState, or coaching.
+
+The first new-session batch completed all 11 distinct videos from 13 exports
+(two exact duplicates). It processed 1,531 frames after the chosen starts;
+60 earlier frames were excluded by the two delayed starts. All runs reached
+the container-reported end with the same frozen weights, detector settings,
+and association implementation. No per-frame labels or later re-seeds guided
+the tracks. The local review is
+`data/reference-review/new-session-20261119/review/index.html`, with provenance
+and counts in `summary.json` beside it in the session directory.
+
+Visual inspection shows several plausible launches and flights, but confirmed
+identity failures remain: `okonr73x` switches to a distractor at frame 67,
+`b9rlx186` selects the player's clothing at frame 79, and `5mcmluz8` switches
+to a turf marking at frame 98. In some failures the real ball is still among
+the detector's proposals. Goal-area/post selections in other clips also need
+independent identity checks. The 1,272 selected-candidate frames are therefore
+**not** an accuracy score or evidence of reliable goal-area tracking. Preserve
+this first pass as the baseline; the next development target is candidate
+association and identity verification through gaps, followed by a separate
+evaluation. These inspected clips are now development evidence, not a fresh
+test set for later tuned versions.
+
+### Capture quality and image-processing probe (2026-11-19)
+
+The mobile recording screen now requests 1080p by default, with 720p and 4K
+options, higher requested bitrates, and Auto/Off stabilization controls. See
+`src/mobile/README.md` from the repository root for capture limitations and the
+physical-phone save/replay/export check. This does not change the frozen
+720p tracking baseline or establish better tracking on higher resolutions.
+
+`probe_contrast_detector.py` compares the frozen ball detector on original
+review JPEGs, mild luminance-only CLAHE, and conservative unsharp masking.
+Every variant uses the same saved prediction-centred crops and thresholds.
+It never updates a track or uses a manual ball label to guide the search.
+Because the inputs are saved JPEGs, its original branch can differ slightly
+from the baseline's source-video buffers. This is a proposal-level diagnostic,
+not an end-to-end tracking or accuracy benchmark.
+
+```powershell
+python -m experiments.ball_tracking.probe_contrast_detector --runs data/reference-review/new-session-20261119/runs --weights data/reference-review/ball-finetune/20261117T004329962346Z/train/weights/best.pt --output data/reference-review/new-session-20261119/contrast-sharpen-next --threads 8
+```
+
+The completed `contrast-sharpen-pilot/index.html` in that session directory
+shows 19 difficult frames from three clips. The results are mixed: CLAHE
+raises the ball proposal's score at `okonr73x` frame 67 but lowers it at
+`b9rlx186` frame 79. Unsharp masking strengthens the ball proposals at
+`f5y3mv5e` frames 113–114, but neither processing method recovers a proposal
+near the visually apparent ball at frames 102 or 120. Detector scores are not
+identity probabilities, and fewer or more proposals do not prove improvement.
+Neither filter is enabled in mobile recording or production perception.
+
+The review also includes a positive-luminance-change overlay after estimated
+global translation alignment. It rejects unreliable alignment and does not
+alter either detector input. This is **not a learned ball heatmap**: moving
+players, shadows, exposure variation and imperfect alignment can also appear.
+It is diagnostic evidence only, with no ball identity, coaching or outcome
+claim. Unsharp masking enhances existing edges; it does not reconstruct
+detail lost to motion blur. Originals and all previous reviews are preserved.

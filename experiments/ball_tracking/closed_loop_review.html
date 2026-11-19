@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SCAN | Ball identity review</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #07110c;
+      --panel: #101d16;
+      --panel-raised: #15251a;
+      --border: #2a4631;
+      --text: #eff8ec;
+      --muted: #afc4b2;
+      --green: #a6ef85;
+      --yellow: #ffd75c;
+      --cyan: #6cddf2;
+      --purple: #c9a1ee;
+      --warn: #ff907e;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top right, #15301d 0, var(--background) 36rem);
+      color: var(--text);
+      font: 16px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible {
+      outline: 3px solid var(--cyan);
+      outline-offset: 3px;
+    }
+    .page { width: min(1500px, 100%); margin: 0 auto; padding: 24px clamp(14px, 3vw, 40px) 40px; }
+    .heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; align-items: flex-start; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; color: var(--green); font-weight: 800; letter-spacing: .14em; font-size: .84rem; }
+    .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border: 2px solid var(--green); border-radius: 50%; font-size: 1.1rem; letter-spacing: 0; }
+    h1 { margin: 12px 0 5px; font-size: clamp(1.65rem, 3vw, 2.7rem); line-height: 1.12; letter-spacing: -.025em; }
+    .subtitle { margin: 0; max-width: 75ch; color: var(--muted); }
+    .status-badge {
+      margin-top: 4px;
+      border: 1px solid #5d834b;
+      background: #19301d;
+      color: var(--green);
+      padding: 9px 14px;
+      border-radius: 999px;
+      font-size: .83rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .clip-nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 16px; }
+    .clip-button {
+      border: 1px solid var(--border);
+      background: #111c15;
+      color: var(--muted);
+      padding: 10px 14px;
+      border-radius: 11px;
+      text-align: left;
+      min-width: 145px;
+    }
+    .clip-button:hover { border-color: #6a9269; color: var(--text); }
+    .clip-button[aria-pressed="true"] { background: #23412a; border-color: var(--green); color: var(--text); }
+    .clip-button .clip-name { display: block; font-size: .92rem; font-weight: 700; }
+    .clip-button .clip-split { display: block; margin-top: 2px; color: var(--green); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
+    .review { border: 1px solid var(--border); border-radius: 20px; background: var(--panel); overflow: hidden; box-shadow: 0 24px 70px #0005; }
+    .review-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
+    .review-header h2 { margin: 0; font-size: 1.1rem; }
+    .meta { margin: 5px 0 0; color: var(--muted); font-size: .86rem; }
+    .frame-indicator { align-self: center; color: var(--green); font-variant-numeric: tabular-nums; font-size: .9rem; font-weight: 700; }
+    .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); gap: 18px; padding: 18px; }
+    .main-stage, .detail-stage { min-width: 0; }
+    .canvas-wrap { display: grid; place-items: center; position: relative; min-height: 250px; border: 1px solid #344b38; border-radius: 13px; background: #030904; overflow: hidden; }
+    #main-canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: 72vh; }
+    .canvas-message { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); background: #030904d9; }
+    .canvas-message[hidden] { display: none; }
+    .detail-stage { display: flex; flex-direction: column; gap: 12px; }
+    .detail-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .detail-heading h3 { margin: 0; font-size: .98rem; }
+    .detail-heading span { color: var(--muted); font-size: .77rem; }
+    .zoom-wrap { display: grid; place-items: center; border: 1px solid #344b38; border-radius: 13px; background: #030904; overflow: hidden; }
+    #zoom-canvas { display: block; width: min(100%, 360px); aspect-ratio: 1; }
+    .zoom-note { margin: -2px 0 0; color: var(--muted); font-size: .79rem; }
+    .metric-grid { display: grid; gap: 8px; }
+    .metric { padding: 10px 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--panel-raised); }
+    .metric-label { display: block; color: var(--muted); font-size: .72rem; letter-spacing: .07em; text-transform: uppercase; }
+    .metric-value { display: block; margin-top: 2px; font-size: .97rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+    .metric-value.good { color: var(--green); }
+    .metric-value.bad { color: var(--warn); }
+    .metric-value.neutral { color: var(--text); }
+    .control-area { border-top: 1px solid var(--border); padding: 16px 20px 20px; }
+    .transport { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .transport button, .speed button {
+      border: 1px solid #4d6b53;
+      border-radius: 9px;
+      background: #1b3422;
+      color: var(--text);
+      min-height: 42px;
+      padding: 8px 14px;
+      font-weight: 650;
+    }
+    .transport button:hover, .speed button:hover { background: #2a4c31; }
+    #play-button { min-width: 104px; background: #a2eb83; border-color: #a2eb83; color: #09160b; }
+    #play-button:hover { background: #c0f8a8; }
+    .speed { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: .8rem; }
+    .speed button { min-width: 43px; padding: 7px 9px; min-height: 38px; font-size: .82rem; }
+    .speed button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }
+    .scrubber { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; margin-top: 15px; }
+    .scrubber label { grid-column: 1 / -1; color: var(--muted); font-size: .8rem; margin-bottom: 4px; }
+    .scrubber input { width: 100%; accent-color: var(--green); }
+    .scrubber output { min-width: 58px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: .82rem; }
+    .legend-and-options { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; border-top: 1px solid var(--border); padding: 16px 20px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 9px 20px; align-items: center; }
+    .legend-title { color: var(--muted); font-size: .76rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    .key { display: inline-flex; align-items: center; gap: 7px; font-size: .83rem; }
+    .swatch { display: inline-block; flex: none; width: 16px; height: 16px; }
+    .swatch.selected { border: 3px solid var(--yellow); border-radius: 50%; }
+    .swatch.manual { border: 2px solid var(--cyan); }
+    .swatch.candidate { width: 11px; height: 11px; border: 2px solid var(--purple); border-radius: 50%; }
+    .swatch.predicted { border: 2px dashed var(--green); border-radius: 50%; }
+    .toggles { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-left: auto; }
+    .toggles label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .81rem; cursor: pointer; }
+    .toggles input { accent-color: var(--green); width: 16px; height: 16px; }
+    .review-footer { padding: 0 20px 18px; color: var(--muted); font-size: .78rem; }
+    .review-footer p { margin: 4px 0 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    @media (max-width: 900px) {
+      .stage { grid-template-columns: minmax(0, 1fr); }
+      .detail-stage { display: grid; grid-template-columns: minmax(180px, 300px) minmax(0, 1fr); align-items: start; }
+      .detail-heading, .zoom-note { grid-column: 1 / -1; }
+      .zoom-wrap { grid-column: 1; grid-row: 2; }
+      .metric-grid { grid-column: 2; grid-row: 2; }
+    }
+    @media (max-width: 580px) {
+      .page { padding-top: 18px; }
+      .status-badge { white-space: normal; }
+      .stage { padding: 10px; }
+      .detail-stage { display: flex; }
+      #zoom-canvas { width: min(100%, 300px); }
+      .speed { margin-left: 0; width: 100%; margin-top: 3px; }
+      .toggles { width: 100%; margin-left: 0; }
+      .legend-and-options { gap: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="heading">
+      <div>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">S</span> SCAN RESEARCH</div>
+        <h1>Ball identity review</h1>
+        <p class="subtitle">Step through the original frames and compare the selected detector position with the manually marked ball. This review helps diagnose tracking; it does not certify a shot result.</p>
+      </div>
+      <div class="status-badge">Offline development review • manual start</div>
+    </header>
+
+    <nav id="clip-nav" class="clip-nav" aria-label="Review clips"></nav>
+
+    <section class="review" aria-label="Frame review">
+      <div class="review-header">
+        <div>
+          <h2 id="clip-title">Loading review…</h2>
+          <p id="frame-meta" class="meta">Frame details will appear here.</p>
+        </div>
+        <div id="frame-indicator" class="frame-indicator" aria-live="polite"></div>
+      </div>
+
+      <div class="stage">
+        <div class="main-stage">
+          <div class="canvas-wrap">
+            <canvas id="main-canvas" role="img" aria-label="Current original frame with optional tracking overlays">The frame review requires canvas support.</canvas>
+            <div id="canvas-message" class="canvas-message">Loading frame…</div>
+          </div>
+        </div>
+        <aside class="detail-stage" aria-label="Ball closeup and frame metrics">
+          <div class="detail-heading"><h3>Ball closeup</h3><span>Original image pixels</span></div>
+          <div class="zoom-wrap"><canvas id="zoom-canvas" width="420" height="420" role="img" aria-label="Closeup around the selected or predicted ball position">The closeup requires canvas support.</canvas></div>
+          <p id="zoom-note" class="zoom-note">The closeup follows the AI selection, or its prediction when no detection is selected.</p>
+          <div class="metric-grid">
+            <div class="metric"><span class="metric-label">Selected position</span><span id="selection-value" class="metric-value neutral">—</span></div>
+            <div class="metric"><span class="metric-label">Distance to manual mark</span><span id="error-value" class="metric-value neutral">—</span></div>
+            <div class="metric"><span class="metric-label">Detector score</span><span id="score-value" class="metric-value neutral">—</span></div>
+            <div class="metric"><span class="metric-label">Candidates on this frame</span><span id="candidates-value" class="metric-value neutral">—</span></div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="control-area">
+        <div class="transport">
+          <button type="button" id="previous-button" aria-label="Previous reviewed frame">← Previous</button>
+          <button type="button" id="play-button" aria-label="Play reviewed frames">Play</button>
+          <button type="button" id="next-button" aria-label="Next reviewed frame">Next →</button>
+          <div class="speed" role="group" aria-label="Playback speed">
+            <span>Speed</span>
+            <button type="button" data-speed="0.25" aria-pressed="false">¼×</button>
+            <button type="button" data-speed="0.5" aria-pressed="false">½×</button>
+            <button type="button" data-speed="1" aria-pressed="true">1×</button>
+          </div>
+        </div>
+        <div class="scrubber">
+          <label for="frame-slider">Reviewed frame</label>
+          <input id="frame-slider" type="range" min="0" max="0" step="1" value="0" aria-label="Reviewed frame">
+          <output id="slider-position" for="frame-slider">0 / 0</output>
+        </div>
+      </div>
+
+      <div class="legend-and-options">
+        <div class="legend" aria-label="Overlay legend">
+          <span class="legend-title">Overlay key</span>
+          <span class="key"><span class="swatch selected" aria-hidden="true"></span>AI selected ball candidate</span>
+          <span class="key"><span class="swatch manual" aria-hidden="true"></span>Manual ball box</span>
+          <span class="key"><span class="swatch candidate" aria-hidden="true"></span>Other detector candidates</span>
+          <span class="key"><span class="swatch predicted" aria-hidden="true"></span>Predicted search position</span>
+        </div>
+        <div class="toggles" role="group" aria-label="Overlay visibility">
+          <label><input id="show-label" type="checkbox" checked>Manual box</label>
+          <label><input id="show-candidates" type="checkbox">Other candidates</label>
+          <label><input id="show-predicted" type="checkbox">Predicted guide</label>
+        </div>
+      </div>
+      <div class="review-footer">
+        <p id="source-report" class="mono"></p>
+        <p>Time is estimated from the source frame rate, not a verified capture timestamp. Detector score is a model output, not the probability of correct ball identity. A centre within 20 px of a manual mark is a proximity check only.</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const REVIEW_DATA = __REVIEW_DATA__;
+    const clips = Array.isArray(REVIEW_DATA.clips) ? REVIEW_DATA.clips : [];
+    const el = (id) => document.getElementById(id);
+    const mainCanvas = el("main-canvas");
+    const zoomCanvas = el("zoom-canvas");
+    const mainCtx = mainCanvas.getContext("2d");
+    const zoomCtx = zoomCanvas.getContext("2d");
+    const cache = new Map();
+    let clipIndex = 0;
+    let frameIndex = 0;
+    let speed = 1;
+    let timer = null;
+    let renderTicket = 0;
+
+    function currentClip() { return clips[clipIndex]; }
+    function currentFrames() { return currentClip()?.frames || []; }
+    function clamp(value, lower, upper) { return Math.max(lower, Math.min(upper, value)); }
+    function point(value) { return Array.isArray(value) && value.length >= 2 ? value : null; }
+    function coordinateText(value) { return point(value) ? `${Math.round(value[0])}, ${Math.round(value[1])} px` : "No detection selected"; }
+    function setMetric(id, text, tone = "neutral") {
+      const element = el(id);
+      element.textContent = text;
+      element.className = `metric-value ${tone}`;
+    }
+
+    function buildClipButtons() {
+      const nav = el("clip-nav");
+      nav.replaceChildren();
+      clips.forEach((clip, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "clip-button";
+        button.setAttribute("aria-pressed", String(index === clipIndex));
+        button.setAttribute("aria-label", `Review ${clip.title || clip.id}`);
+        const title = document.createElement("span");
+        title.className = "clip-name";
+        title.textContent = clip.title || clip.id;
+        const split = document.createElement("span");
+        split.className = "clip-split";
+        split.textContent = `${clip.split || "development"} · ${(clip.frames || []).length} frames`;
+        button.append(title, split);
+        button.addEventListener("click", () => selectClip(index));
+        nav.append(button);
+      });
+    }
+
+    function updateClipButtons() {
+      [...el("clip-nav").children].forEach((button, index) => {
+        button.setAttribute("aria-pressed", String(index === clipIndex));
+      });
+    }
+
+    function stopPlayback() {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+      el("play-button").textContent = "Play";
+      el("play-button").setAttribute("aria-label", "Play reviewed frames");
+    }
+
+    function startPlayback() {
+      const frames = currentFrames();
+      if (!frames.length) return;
+      if (frameIndex >= frames.length - 1) frameIndex = 0;
+      stopPlayback();
+      el("play-button").textContent = "Pause";
+      el("play-button").setAttribute("aria-label", "Pause reviewed frames");
+      const fps = Number(currentClip().fps) || 30;
+      timer = window.setInterval(() => {
+        if (frameIndex >= currentFrames().length - 1) {
+          stopPlayback();
+          return;
+        }
+        frameIndex += 1;
+        render();
+      }, Math.max(20, 1000 / (fps * speed)));
+      render();
+    }
+
+    function selectClip(index) {
+      if (index === clipIndex) return;
+      stopPlayback();
+      clipIndex = index;
+      frameIndex = 0;
+      updateClipButtons();
+      render();
+    }
+
+    function selectFrame(index) {
+      const frames = currentFrames();
+      frameIndex = clamp(index, 0, Math.max(0, frames.length - 1));
+      render();
+    }
+
+    function showMessage(message) {
+      const overlay = el("canvas-message");
+      overlay.textContent = message;
+      overlay.hidden = false;
+    }
+
+    function imageFor(url) {
+      if (!cache.has(url)) {
+        const image = new Image();
+        image.decoding = "async";
+        image.src = url;
+        cache.set(url, image);
+      }
+      return cache.get(url);
+    }
+
+    function renderMetadata(clip, frame, count) {
+      el("clip-title").textContent = clip.title || clip.id;
+      const time = Number.isFinite(Number(frame.time_s)) ? `${Number(frame.time_s).toFixed(3)} s` : "time unavailable";
+      const fps = Number.isFinite(Number(clip.fps)) ? `${Number(clip.fps).toFixed(3)} FPS` : "FPS unavailable";
+      el("frame-meta").textContent = `Frame ${frame.frame} · ${time} (frame/FPS estimate) · ${fps}`;
+      el("frame-indicator").textContent = `${frameIndex + 1} / ${count} reviewed frames`;
+      el("source-report").textContent = `Source report: ${clip.report_name || "offline detector run"} · clip ${clip.id}`;
+      const slider = el("frame-slider");
+      slider.max = String(Math.max(0, count - 1));
+      slider.value = String(frameIndex);
+      slider.setAttribute("aria-valuetext", `Frame ${frame.frame}, ${time}`);
+      el("slider-position").textContent = `${frameIndex + 1} / ${count}`;
+      el("previous-button").disabled = frameIndex === 0;
+      el("next-button").disabled = frameIndex === count - 1;
+
+      setMetric("selection-value", coordinateText(frame.selected), point(frame.selected) ? "good" : "bad");
+      if (Number.isFinite(Number(frame.error_px)) && frame.error_px !== null) {
+        const error = Number(frame.error_px);
+        setMetric("error-value", `${error.toFixed(1)} px · ${error <= 20 ? "within" : "outside"} 20 px`, error <= 20 ? "good" : "bad");
+      } else {
+        setMetric("error-value", "No scored position", "neutral");
+      }
+      if (Number.isFinite(Number(frame.score)) && frame.score !== null) {
+        setMetric("score-value", `${Number(frame.score).toFixed(3)} · not identity probability`);
+      } else {
+        setMetric("score-value", "No selected detection");
+      }
+      setMetric("candidates-value", String((frame.candidates || []).length));
+    }
+
+    function drawTrail(ctx, clip, index, project, scale) {
+      const frames = clip.frames || [];
+      const first = Math.max(0, index - 23);
+      ctx.save();
+      ctx.strokeStyle = "#ffd75c";
+      ctx.lineWidth = Math.max(2, scale * 1.4);
+      ctx.globalAlpha = 0.64;
+      ctx.beginPath();
+      for (let i = first; i <= index; i += 1) {
+        const here = frames[i];
+        if (!point(here?.selected)) continue;
+        const [x, y] = project(here.selected);
+        const previous = frames[i - 1];
+        if (i > first && point(previous?.selected) && here.frame === previous.frame + 1) {
+          ctx.lineTo(x, y);
+        } else {
+          ctx.moveTo(x, y);
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawOverlays(ctx, clip, frame, index, project, scale) {
+      drawTrail(ctx, clip, index, project, scale);
+      if (el("show-candidates").checked) {
+        ctx.save();
+        ctx.strokeStyle = "#c9a1ee";
+        ctx.lineWidth = Math.max(1.5, scale * 1.3);
+        ctx.globalAlpha = 0.72;
+        for (const candidate of frame.candidates || []) {
+          if (!point(candidate.center)) continue;
+          const [x, y] = project(candidate.center);
+          ctx.beginPath();
+          ctx.arc(x, y, 6.5 * scale, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      if (el("show-predicted").checked && point(frame.predicted)) {
+        const [x, y] = project(frame.predicted);
+        ctx.save();
+        ctx.strokeStyle = "#a6ef85";
+        ctx.lineWidth = Math.max(1.5, scale * 1.3);
+        ctx.setLineDash([5 * scale, 4 * scale]);
+        ctx.beginPath();
+        ctx.arc(x, y, 11 * scale, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(x - 16 * scale, y); ctx.lineTo(x - 8 * scale, y);
+        ctx.moveTo(x + 8 * scale, y); ctx.lineTo(x + 16 * scale, y);
+        ctx.moveTo(x, y - 16 * scale); ctx.lineTo(x, y - 8 * scale);
+        ctx.moveTo(x, y + 8 * scale); ctx.lineTo(x, y + 16 * scale);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (el("show-label").checked && Array.isArray(frame.label) && frame.label.length === 4) {
+        const [x1, y1] = project(frame.label.slice(0, 2));
+        const [x2, y2] = project(frame.label.slice(2, 4));
+        ctx.save();
+        ctx.strokeStyle = "#6cddf2";
+        ctx.lineWidth = Math.max(2, scale * 1.8);
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        ctx.restore();
+      }
+      if (point(frame.selected)) {
+        const [x, y] = project(frame.selected);
+        ctx.save();
+        ctx.shadowColor = "#000";
+        ctx.shadowBlur = 8 * scale;
+        ctx.strokeStyle = "#ffd75c";
+        ctx.lineWidth = Math.max(2.5, scale * 2.2);
+        ctx.beginPath();
+        ctx.arc(x, y, 11 * scale, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function paint(image, clip, frame, ticket) {
+      if (ticket !== renderTicket) return;
+      const width = Number(frame.width) || image.naturalWidth;
+      const height = Number(frame.height) || image.naturalHeight;
+      mainCanvas.width = width;
+      mainCanvas.height = height;
+      mainCtx.drawImage(image, 0, 0, width, height);
+      drawOverlays(mainCtx, clip, frame, frameIndex, ([x, y]) => [x, y], 1);
+
+      const focus = point(frame.selected) || point(frame.predicted) || point(clip.seed) || [width / 2, height / 2];
+      const cropWidth = Math.min(160, width);
+      const cropHeight = Math.min(160, height);
+      const left = clamp(focus[0] - cropWidth / 2, 0, width - cropWidth);
+      const top = clamp(focus[1] - cropHeight / 2, 0, height - cropHeight);
+      const scaleX = zoomCanvas.width / cropWidth;
+      const scaleY = zoomCanvas.height / cropHeight;
+      zoomCtx.fillStyle = "#030904";
+      zoomCtx.fillRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+      zoomCtx.imageSmoothingEnabled = false;
+      zoomCtx.drawImage(image, left, top, cropWidth, cropHeight, 0, 0, zoomCanvas.width, zoomCanvas.height);
+      zoomCtx.save();
+      zoomCtx.beginPath();
+      zoomCtx.rect(0, 0, zoomCanvas.width, zoomCanvas.height);
+      zoomCtx.clip();
+      drawOverlays(zoomCtx, clip, frame, frameIndex,
+        ([x, y]) => [(x - left) * scaleX, (y - top) * scaleY], Math.min(scaleX, scaleY));
+      zoomCtx.restore();
+      el("zoom-note").textContent = point(frame.selected)
+        ? "160 × 160 source pixels around the AI selection; cyan shows the manual box when enabled."
+        : "No detection selected. Closeup follows the predicted position; a prediction is not a ball observation.";
+      el("canvas-message").hidden = true;
+      mainCanvas.setAttribute("aria-label", `Original frame ${frame.frame} of ${clip.title || clip.id}, with selected AI candidate and optional manual annotations`);
+      zoomCanvas.setAttribute("aria-label", `Closeup around ${point(frame.selected) ? "AI selection" : "predicted position"} on frame ${frame.frame}`);
+    }
+
+    function render() {
+      const ticket = ++renderTicket;
+      const clip = currentClip();
+      const frames = currentFrames();
+      if (!clip || !frames.length) {
+        showMessage("No review frames were embedded in this page.");
+        el("clip-title").textContent = "No frames available";
+        return;
+      }
+      const frame = frames[frameIndex];
+      renderMetadata(clip, frame, frames.length);
+      const image = imageFor(frame.image);
+      if (image.complete) {
+        if (image.naturalWidth > 0) paint(image, clip, frame, ticket);
+        else showMessage(`Could not open frame ${frame.frame}. Keep the review images beside this HTML file.`);
+        return;
+      }
+      showMessage(`Loading frame ${frame.frame}…`);
+      image.addEventListener("load", () => paint(image, clip, frame, ticket), { once: true });
+      image.addEventListener("error", () => {
+        if (ticket === renderTicket) showMessage(`Could not open frame ${frame.frame}. Keep the review images beside this HTML file.`);
+      }, { once: true });
+    }
+
+    el("previous-button").addEventListener("click", () => selectFrame(frameIndex - 1));
+    el("next-button").addEventListener("click", () => selectFrame(frameIndex + 1));
+    el("play-button").addEventListener("click", () => timer === null ? startPlayback() : stopPlayback());
+    el("frame-slider").addEventListener("input", (event) => selectFrame(Number(event.target.value)));
+    for (const checkbox of document.querySelectorAll(".toggles input")) {
+      checkbox.addEventListener("change", render);
+    }
+    for (const button of document.querySelectorAll(".speed button")) {
+      button.addEventListener("click", () => {
+        speed = Number(button.dataset.speed);
+        for (const choice of document.querySelectorAll(".speed button")) {
+          choice.setAttribute("aria-pressed", String(choice === button));
+        }
+        if (timer !== null) startPlayback();
+      });
+    }
+    document.addEventListener("keydown", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, button"))) return;
+      if (event.key === "ArrowLeft") { event.preventDefault(); selectFrame(frameIndex - 1); }
+      if (event.key === "ArrowRight") { event.preventDefault(); selectFrame(frameIndex + 1); }
+      if (event.code === "Space") { event.preventDefault(); timer === null ? startPlayback() : stopPlayback(); }
+    });
+    buildClipButtons();
+    render();
+  </script>
+</body>
+</html>

@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.finetune_ball import inventory, iou, score_frame, summarise, training_options
+from scripts.finetune_ball import (check_model, inventory, iou, score_frame,
+                                   summarise, training_options)
 
 
 def test_perfect_match_and_extra_false_object():
@@ -43,6 +44,13 @@ def test_training_is_bounded_and_windows_compatible(tmp_path):
     assert options["freeze"] == 10 and options["mosaic"] == 0
     assert options["lr0"] == 0.0001 and not options["amp"]
     assert options["nbs"] == 2 and options["warmup_epochs"] == 0
+
+
+def test_coco_sports_ball_seed_requires_explicit_opt_in(tmp_path):
+    model = SimpleNamespace(task="detect", names={32: "sports ball"})
+    with pytest.raises(ValueError, match="COCO sports-ball"):
+        check_model(model)
+    assert check_model(model, allow_coco=True) == 32
 
 
 def make_dataset(root):

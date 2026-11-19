@@ -1,0 +1,7 @@
+{
+  "clips": [
+    {"clip_id": "e3949580d0f2", "split": "train", "frames": [107, 112, 120, 129, 132, 142]},
+    {"clip_id": "735e17f02bd5", "split": "train", "frames": [85, 95, 105, 115, 120, 125]},
+    {"clip_id": "36bf848f409c", "split": "val", "frames": [52, 64, 76, 84, 90, 100]}
+  ]
+}

@@ -108,10 +108,13 @@ def summarise(rows):
             "frames": len(rows)}
 
 
-def check_model(model):
+def check_model(model, allow_coco=False):
     names = model.names
-    if model.task != "detect" or names != {0: "ball"}:
-        raise ValueError(f"This experiment requires the dedicated one-class ball model: {names}")
+    if model.task == "detect" and names == {0: "ball"}:
+        return 0
+    if allow_coco and model.task == "detect" and names.get(32) == "sports ball":
+        return 32
+    raise ValueError(f"Expected a one-class ball model or approved COCO sports-ball seed: {names}")
 
 
 def compare(run, baseline, adapted, imgsz, device, confidence):
@@ -121,8 +124,8 @@ def compare(run, baseline, adapted, imgsz, device, confidence):
     out = run / "comparison"
     out.mkdir(exist_ok=False)
     models = {"baseline": YOLO(str(baseline)), "adapted": YOLO(str(adapted))}
-    for model in models.values():
-        check_model(model)
+    classes = {name: check_model(model, allow_coco=True)
+               for name, model in models.items()}
     frames, cards = [], []
     images = sorted((run / "dataset/images/val").glob("*.jpg"))
     if not images:
@@ -142,7 +145,7 @@ def compare(run, baseline, adapted, imgsz, device, confidence):
                           tuple(round(v) for v in truth[2:]), (80, 255, 80), 2)
         for name, model in models.items():
             result = model.predict(image, device=device, imgsz=imgsz, conf=confidence,
-                                   iou=0.5, max_det=24, classes=[0], rect=False,
+                                   iou=0.5, max_det=24, classes=[classes[name]], rect=False,
                                    verbose=False)[0]
             predictions = [{"box": box, "confidence": conf} for box, conf in
                            zip(result.boxes.xyxy.cpu().tolist(), result.boxes.conf.cpu().tolist())]
@@ -197,8 +200,8 @@ def train_sanity(run, metadata):
     out = run / "train-sanity"
     out.mkdir(exist_ok=False)
     models = {"baseline": YOLO(str(baseline)), "adapted": YOLO(str(adapted))}
-    for model in models.values():
-        check_model(model)
+    classes = {name: check_model(model, allow_coco=True)
+               for name, model in models.items()}
     thresholds = (0.01, 0.10, 0.25)
     rows, cards = [], []
     for number, source in enumerate(images, 1):
@@ -217,7 +220,7 @@ def train_sanity(run, metadata):
         for name, model in models.items():
             result = model.predict(image, device=metadata["options"]["device"],
                                    imgsz=metadata["options"]["imgsz"], conf=thresholds[0],
-                                   iou=0.5, max_det=100, classes=[0], rect=False,
+                                   iou=0.5, max_det=100, classes=[classes[name]], rect=False,
                                    verbose=False)[0]
             predictions = [{"box": box, "confidence": confidence} for box, confidence in
                            zip(result.boxes.xyxy.cpu().tolist(), result.boxes.conf.cpu().tolist())]
@@ -277,8 +280,11 @@ def train(args):
     if args.epochs <= 0 or args.batch <= 0 or args.imgsz < 320 or args.imgsz % 32:
         raise ValueError("Use positive epochs/batch and imgsz >=320 divisible by 32.")
     records = inventory(args.dataset)
+    clips = json.loads((args.dataset / "export_report.json").read_text(encoding="utf-8"))["clips"]
+    groups = {split: sorted({item["group"] for item in clips.values() if item["split"] == split})
+              for split in ("train", "val")}
     model = YOLO(str(args.weights))
-    check_model(model)
+    baseline_class = check_model(model, allow_coco=args.coco_sports_ball)
     RUNS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     run = RUNS / stamp
@@ -289,13 +295,17 @@ def train(args):
     dataset_yaml = run / "dataset/dataset.yaml"
     dataset_yaml.write_text('path: ' + json.dumps((run / 'dataset').as_posix()) +
                             '\ntrain: images/train\nval: images/val\nnames:\n  0: ball\n', encoding="utf-8")
-    options = training_options(dataset_yaml, run, args.epochs, args.imgsz, args.batch, args.device, args.seed)
+    options = training_options(dataset_yaml, run, args.epochs, args.imgsz, args.batch,
+                               args.device, args.seed)
     metadata = {"status": "running", "python": sys.version, "torch": torch.__version__,
                 "ultralytics": ultralytics.__version__, "cuda_available": torch.cuda.is_available(),
                 "model_parameters": sum(p.numel() for p in model.model.parameters()),
+                "baseline_class_id": baseline_class,
                 "baseline_sha256": digest(run / "baseline.pt"), "dataset_inventory": records,
                 "options": options, "comparison_confidence": args.confidence,
-                "limitation": "One night training clip; daylight validation used for checkpoint selection."}
+                "recording_groups": groups,
+                "limitation": "Validation recordings were used for checkpoint selection and are not an "
+                              "independent test set; inspect full clips before deployment."}
     write_json(run / "experiment.json", metadata)
     print("Experiment: " + str(run), flush=True)
     started = time.perf_counter()
@@ -331,6 +341,8 @@ def main():
     training.add_argument("--batch", type=int, default=2)
     training.add_argument("--device", default="cpu")
     training.add_argument("--seed", type=int, default=17)
+    training.add_argument("--coco-sports-ball", action="store_true",
+                          help="Allow a COCO-pretrained sports-ball seed instead of a one-class seed")
     training.add_argument("--confidence", type=float, default=0.25)
     training.add_argument("--skip-compare", action="store_true")
     evaluation = sub.add_parser("compare")

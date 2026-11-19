@@ -8,11 +8,37 @@ from pathlib import Path
 from scripts.ball_dataset import file_sha256, validate_labels
 
 
+def consecutive_miss_runs(rows: list[dict], missed) -> list[dict]:
+    """Count consecutive reviewed video frames, never bridging an annotation gap."""
+    runs = []
+    first = last = None
+    for row in sorted(rows, key=lambda item: item["frame"]):
+        frame = row["frame"]
+        if not missed(row):
+            if first is not None:
+                runs.append({"start_frame": first, "end_frame": last,
+                             "length_frames": last - first + 1})
+            first = last = None
+            continue
+        if first is not None and frame != last + 1:
+            runs.append({"start_frame": first, "end_frame": last,
+                         "length_frames": last - first + 1})
+            first = None
+        if first is None:
+            first = frame
+        last = frame
+    if first is not None:
+        runs.append({"start_frame": first, "end_frame": last,
+                     "length_frames": last - first + 1})
+    return runs
+
+
 def score_path(result: dict, annotations: list[dict]) -> dict:
     start = result["anchor"]
     end = start + result["frames_attempted"]
     selected = [row for row in annotations if start < row["frame"] <= end]
     visible = [row for row in selected if row["state"] == "visible"]
+    absent = [row for row in selected if row["state"] == "absent"]
     path = {row["frame"]: row for row in result["path"]}
     rows = []
     for label in visible:
@@ -29,9 +55,24 @@ def score_path(result: dict, annotations: list[dict]) -> dict:
     errors = [row["error_px"] for row in rows if row["error_px"] is not None]
     supported = [row for row in rows if row["observed"] and
                  row["reliability"] == "provisional"]
+    raw_misses = consecutive_miss_runs(
+        rows, lambda row: row["error_px"] is None or row["error_px"] > 20)
+    unsupported = consecutive_miss_runs(
+        rows, lambda row: row["error_px"] is None or row["error_px"] > 20 or
+        not row["observed"] or row["reliability"] != "provisional")
+    absent_rows = []
+    for label in absent:
+        estimate = path.get(label["frame"])
+        accepted = bool(estimate and estimate["observed"] and
+                        estimate["reliability"] == "provisional")
+        absent_rows.append({"frame": label["frame"],
+                            "estimate": estimate["center"] if estimate else None,
+                            "observed": estimate["observed"] if estimate else False,
+                            "reliability": estimate["reliability"] if estimate else "lost",
+                            "false_accepted": accepted})
     return {"visible_reviewed": len(visible),
             "uncertain_reviewed": sum(row["state"] == "uncertain" for row in selected),
-            "absent_reviewed": sum(row["state"] == "absent" for row in selected),
+            "absent_reviewed": len(absent),
             "unreviewed": sum(row["state"] == "unreviewed" for row in selected),
             "located": len(errors),
             "within_10px": sum(error <= 10 for error in errors),
@@ -40,6 +81,21 @@ def score_path(result: dict, annotations: list[dict]) -> dict:
             "provisional_observed_within_20px": sum(
                 row["error_px"] <= 20 for row in supported),
             "provisional_observed_total": len(supported),
+            "provisional_observed_wrong_20px": sum(
+                row["error_px"] is None or row["error_px"] > 20
+                for row in supported),
+            "visible_missed_20px": len(visible) - sum(error <= 20 for error in errors),
+            "visible_miss_runs_20px": raw_misses,
+            "longest_visible_miss_run_20px": max(
+                (run["length_frames"] for run in raw_misses), default=0),
+            "visible_without_supported_hit_20px": len(visible) - sum(
+                row["error_px"] <= 20 for row in supported),
+            "visible_unsupported_runs_20px": unsupported,
+            "longest_visible_unsupported_run_20px": max(
+                (run["length_frames"] for run in unsupported), default=0),
+            "absent_with_path": sum(row["estimate"] is not None for row in absent_rows),
+            "false_accepted_absent_frames": sum(row["false_accepted"] for row in absent_rows),
+            "absent_rows": absent_rows,
             "rows": rows}
 
 

@@ -1,0 +1,13 @@
+{
+  "clips": [
+    {"clip_id": "13a1022c5009", "group": "night-session-1", "split": "train"},
+    {"clip_id": "ee73dffd61b5", "group": "night-session-1", "split": "train"},
+    {"clip_id": "6292a1b2b194", "group": "sept-stadium-session", "split": "train"},
+    {"clip_id": "560706a458b1", "group": "sept-stadium-session", "split": "train"},
+    {"clip_id": "e9935750581e", "group": "day-session-1", "split": "train"},
+    {"clip_id": "96b382d82d92", "group": "day-session-1", "split": "train"},
+    {"clip_id": "e3949580d0f2", "group": "night-session-2", "split": "train"},
+    {"clip_id": "735e17f02bd5", "group": "night-session-2", "split": "train"},
+    {"clip_id": "36bf848f409c", "group": "day-session-2", "split": "val"}
+  ]
+}

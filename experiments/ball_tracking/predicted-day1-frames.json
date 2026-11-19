@@ -1,0 +1,9 @@
+{
+  "clips": [
+    {
+      "clip_id": "e9935750581e", "split": "train",
+      "frames": [118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133],
+      "trajectory": "data/reference-review/beam-motion-track/stationary-shot/e9935750581e-00279d0a/trajectory.json"
+    }
+  ]
+}
