@@ -71,3 +71,10 @@ ball-contact timing.
 The strike detector is an engineering heuristic: it picks the ankle with the highest motion
 relative to the hip midpoint. The feedback is also provisional. This is enough to validate the
 pipeline, but it should not be described as validated soccer biomechanics.
+
+Written reports withhold a technique grade when perception is unusable, Jev is unavailable,
+or the primary-issue judgement is missing or favours insufficient evidence. They lead with
+pose coverage and, when usable, the descriptive strike-window measurements. These reports
+use deterministic wording instead of language synthesis so uncertainty cannot be rewritten
+as an execution grade. Raw Jev scores remain in the analysis diagnostics; controller and
+speech policy are unchanged. Outcome claims still require their own ball/goal evidence.

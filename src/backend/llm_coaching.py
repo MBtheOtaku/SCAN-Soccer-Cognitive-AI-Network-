@@ -6,7 +6,7 @@ from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from src.backend.coaching_report import CoachingReport
+from src.backend.coaching_report import CoachingReport, technique_grade_available
 from src.backend.situated_state import SituatedState
 
 
@@ -191,6 +191,8 @@ CRITICAL RULES
 - Do not convert raw joint angles into a new soccer diagnosis.
 - Do not manufacture criticism merely to give feedback.
 - Treat Jev judgements as probabilities, not certainty.
+- An insufficient-evidence judgement is not a mixed or poor execution grade.
+  Never turn uncertainty or tracking coverage into a technique-quality rating.
 - Separate technique quality from shot outcome.
 - Training intention states the player's goal, not an observed achievement.
   Keep the report relevant to power, curl or placement when declared, without
@@ -561,6 +563,18 @@ def refine_coaching_report_with_llm(
         )
         or DEFAULT_COACHING_MODEL
     )
+
+    if not technique_grade_available(situated_state, jev_judgements):
+        # The observation-first report is deterministic while grading evidence
+        # is unavailable. No language model may restore an unsupported rating.
+        # This concerns written reporting only; intervention remains with policy.
+        return deterministic_report, {
+            "status": "skipped",
+            "model": model,
+            "used_llm": False,
+            "reason": "measurement_report_technique_grade_withheld",
+            "error": None,
+        }
 
     # -----------------------------------------------------
     # No API key -> deterministic fallback

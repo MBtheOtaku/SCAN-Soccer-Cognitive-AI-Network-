@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Any, Optional
 
 from src.backend.situated_state import SituatedState
 from src.backend.jev_judgements import JevJudgementResult
+from src.backend.strike_window import describe_strike_window
 
 
 # =========================================================
@@ -968,6 +970,35 @@ def _build_confidence_note(
 # =========================================================
 
 
+def technique_grade_available(state: SituatedState, judgements: dict[str, Any]) -> bool:
+    """Report display constraint; never changes raw Jev answers or policy.
+
+    Uncertainty is not an execution grade. This only preserves the existing
+    grading path when perception is usable and Jev supplied a primary-issue
+    answer other than insufficient evidence.
+    """
+    answers = judgements.get("answers") or {}
+    issue = answers.get("primary_issue") or {}
+    return (
+        state.perception_usable is True
+        and judgements.get("status") == "ok"
+        and issue.get("choice") in {*ISSUE_RECOMMENDATIONS, "none"}
+    )
+
+
+def _measurement_assessment(state: SituatedState) -> str:
+    coverage = _safe_float(state.pose_coverage)
+    if coverage is not None and math.isfinite(coverage) and 0 <= coverage <= 1:
+        lead = f"Pose measurements passed the current checks in {coverage:.0%} of video frames."
+    else:
+        lead = "Reliable pose coverage is not available for this repetition."
+    observation = describe_strike_window(state.strike_window)
+    return " ".join(part for part in (
+        lead, observation,
+        "A technique grade is withheld because the evidence does not support one.",
+    ) if part)
+
+
 def build_coaching_report(
     situated_state: SituatedState,
     jev_result: JevJudgementResult,
@@ -1091,6 +1122,13 @@ def build_coaching_report(
 
         feedback_probability = None
 
+    grade_available = technique_grade_available(situated_state, jev_result.to_dict())
+    if not grade_available:
+        # Keep the original score in Jev diagnostics. Do not turn its uncertain
+        # category into praise, criticism, or a user-facing quality percentage.
+        technique_label = None
+        technique_probability = None
+
     # -----------------------------------------------------
     # Build report sections
     # -----------------------------------------------------
@@ -1129,6 +1167,7 @@ def build_coaching_report(
                 outcome_label
             ),
         )
+        if grade_available else ""
     )
 
     outcome_analysis = (
@@ -1210,6 +1249,20 @@ def build_coaching_report(
             ),
         )
     )
+
+    if not grade_available:
+        overall_assessment = _measurement_assessment(situated_state)
+        window = situated_state.strike_window or {}
+        if window.get("status") == "usable":
+            what_went_well = (
+                "The local movement window passed the current pose-data checks, "
+                "so its observations can be reviewed. Passing those checks does "
+                "not establish accurate joint positions or good technique."
+            )
+        else:
+            what_went_well = (
+                "No specific technical strength is established by the available evidence."
+            )
 
     # -----------------------------------------------------
     # Human-readable primary focus

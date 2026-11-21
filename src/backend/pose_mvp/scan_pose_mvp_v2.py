@@ -1191,7 +1191,7 @@ def analyze(
     # Add an exact measurement note after synthesis so it survives both
     # external-service failures and language rewriting. Keep it out of speech.
     measurement_note = describe_strike_window(situated_state.strike_window)
-    if measurement_note:
+    if measurement_note and measurement_note not in coaching_report.overall_assessment:
         coaching_report.confidence_note = " ".join(
             text for text in (coaching_report.confidence_note, measurement_note)
             if text
