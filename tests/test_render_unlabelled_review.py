@@ -55,6 +55,15 @@ def _save(tmp_path, report):
     return directory.parent
 
 
+def _inspected(report):
+    report = copy.deepcopy(report)
+    report.update(clip="inspected_shot_1", split="inspected_session_unlabelled",
+                  association_method="temporal")
+    report["path"][0].update(reason="near_prediction_provisional", missing_run=0)
+    report["path"][1].update(reason="no_candidate", missing_run=1)
+    return report
+
+
 def test_render_unlabelled_report_without_fabricated_accuracy(tmp_path):
     reports = _save(tmp_path, _report(tmp_path))
     output = tmp_path / "review"
@@ -70,11 +79,129 @@ def test_render_unlabelled_report_without_fabricated_accuracy(tmp_path):
     assert match
     clip = json.loads(match.group(1))["clips"][0]
     assert clip["title"] == "IMG_9999.mov"
+    assert "frame_transform" not in clip
+    assert "Downsampled clips show processing previews" not in html
+    assert "Original image pixels" in html
     assert clip["split"] == "unseen session · unlabelled"
     assert [item["frame"] for item in clip["frames"]] == [10, 11]
     assert [item["selected"] for item in clip["frames"]] == [[202.0, 802.0], None]
     assert all(item["label"] is None and item["error_px"] is None for item in clip["frames"])
     assert (output / clip["frames"][0]["image"]).read_bytes() == b"original frame 10"
+
+
+def _transform(report, source_width, source_height):
+    width, height = report["width"], report["height"]
+    downsampled = (width, height) != (source_width, source_height)
+    report["frame_transform"] = {
+        "source_width": source_width, "source_height": source_height,
+        "width": width, "height": height,
+        "scale_x": width / source_width, "scale_y": height / source_height,
+        "status": "downsampled" if downsampled else "native",
+        "interpolation": "INTER_AREA" if downsampled else "none",
+    }
+    return report
+
+
+@pytest.mark.parametrize("source_dimensions", [(1920, 1080), (2880, 1620), (3840, 2160)])
+def test_optional_frame_transform_distinguishes_native_and_processing_images(tmp_path, source_dimensions):
+    report = _transform(_report(tmp_path), *source_dimensions)
+    reports = _save(tmp_path, report)
+    target, _, _ = render_review(reports, tmp_path / "review")
+    html = target.read_text(encoding="utf-8")
+    clip = json.loads(re.search(r"const REVIEW_DATA = (\{.*\});", html).group(1))["clips"][0]
+
+    assert clip["frame_transform"] == report["frame_transform"]
+    assert clip["frames"][0]["width"] == 1920
+    assert clip["frames"][0]["selected"] == [202.0, 802.0]
+    if source_dimensions == (1920, 1080):
+        assert clip["title"] == "IMG_9999.mov"
+        assert "Downsampled clips show processing previews" not in html
+        assert "Original image pixels" in html
+    else:
+        assert clip["title"] == (f"IMG_9999.mov · source {source_dimensions[0]}×{source_dimensions[1]}; "
+                                 "preview 1920×1080")
+        assert "Downsampled clips show processing previews, not native-resolution original frames" in html
+        assert "Processing image pixels" in html
+        assert "160 × 160 processing pixels" in html
+        assert "`Processing frame ${frame.frame}" in html
+        assert "Original image pixels" not in html
+        assert "160 × 160 source pixels" not in html
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda report: report.update(frame_transform=None),
+    lambda report: report.update(frame_transform=[]),
+    lambda report: report["frame_transform"].update(source_width=True),
+    lambda report: report["frame_transform"].update(source_height=0),
+    lambda report: report["frame_transform"].update(width=720),
+    lambda report: report["frame_transform"].update(source_width=1000),
+    lambda report: report["frame_transform"].update(scale_x=1.0),
+    lambda report: report["frame_transform"].update(scale_y=float("nan")),
+    lambda report: report["frame_transform"].update(status="native"),
+    lambda report: report["frame_transform"].update(interpolation="none"),
+    lambda report: report["frame_transform"].pop("scale_y"),
+])
+def test_rejects_invalid_or_inconsistent_frame_transform(tmp_path, mutation):
+    report = _transform(_report(tmp_path), 3840, 2160)
+    mutation(report)
+    reports = _save(tmp_path, report)
+    with pytest.raises(ValueError, match="frame_transform"):
+        render_review(reports, tmp_path / "review")
+
+
+@pytest.mark.parametrize("association", ["temporal", "recovery", "motion-recovery"])
+def test_render_inspected_temporal_report_as_development_not_unseen(tmp_path, association):
+    report = _inspected(_report(tmp_path))
+    report["association_method"] = association
+    reports = _save(tmp_path, report)
+    target, clips, frames = render_review(reports, tmp_path / "review")
+
+    assert (clips, frames) == (1, 2)
+    html = target.read_text(encoding="utf-8")
+    assert "Previously inspected development clips using temporal association" in html
+    assert "Offline development review • inspected session • temporal association • manual start" in html
+    assert "Frozen detector on an unseen recording session" not in html
+    assert "there are no manual labels or accuracy scores here" in html
+    assert "Association: ${frame.association_reason" in html
+    match = re.search(r"const REVIEW_DATA = (\{.*\});", html)
+    assert match
+    clip = json.loads(match.group(1))["clips"][0]
+    assert clip["split"] == "inspected session · development · unlabelled"
+    assert [row["association_reason"] for row in clip["frames"]] == [
+        "near_prediction_provisional", "no_candidate"]
+    assert [row["missing_run"] for row in clip["frames"]] == [0, 1]
+    assert all(row["label"] is None and row["error_px"] is None for row in clip["frames"])
+
+
+def test_mixed_review_keeps_per_clip_session_labels(tmp_path):
+    unseen = _report(tmp_path)
+    _save(tmp_path, unseen)
+    reports = _save(tmp_path, _inspected(unseen))
+    target, clips, frames = render_review(reports, tmp_path / "review")
+
+    assert (clips, frames) == (2, 4)
+    html = target.read_text(encoding="utf-8")
+    assert "Offline tracks from unseen and previously inspected recording sessions" in html
+    assert "Frozen detector on an unseen recording session" not in html
+    match = re.search(r"const REVIEW_DATA = (\{.*\});", html)
+    assert match
+    by_id = {item["id"]: item for item in json.loads(match.group(1))["clips"]}
+    assert by_id["unseen_shot_1"]["split"] == "unseen session · unlabelled"
+    assert by_id["inspected_shot_1"]["split"] == "inspected session · development · unlabelled"
+    assert "association_reason" not in by_id["unseen_shot_1"]["frames"][0]
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda report: report.update(association_method="legacy"),
+    lambda report: report["path"][0].update(reason=""),
+    lambda report: report["path"][1].update(missing_run=-1),
+])
+def test_rejects_incomplete_inspected_temporal_provenance(tmp_path, mutation):
+    report = _inspected(_report(tmp_path))
+    mutation(report)
+    reports = _save(tmp_path, report)
+    with pytest.raises(ValueError):
+        render_review(reports, tmp_path / "review")
 
 
 @pytest.mark.parametrize("mutation", [

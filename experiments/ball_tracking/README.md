@@ -665,3 +665,104 @@ players, shadows, exposure variation and imperfect alignment can also appear.
 It is diagnostic evidence only, with no ball identity, coaching or outcome
 claim. Unsharp masking enhances existing edges; it does not reconstruct
 detail lost to motion blur. Originals and all previous reviews are preserved.
+
+### Temporal association development check (2026-11-19)
+
+The optional `--association temporal` runner keeps a narrow main prediction and
+requires consecutive moving observations before promoting a more distant path.
+The separate optional `--association recovery` mode adds a bounded slow/rebound
+hypothesis after repeated nearby detector observations, preserving missing frames.
+The opt-in `--association motion-recovery` mode can release that local guard
+after three consecutive accepted movement steps, with a bounded prediction
+corridor and a causal veto for recurring off-target stationary proposals.
+It is an offline development option, not verified ball identity.
+It preserves missing detections and estimates background translation rather than
+allowing one stronger clothing/turf proposal to redirect the track. The legacy
+association remains the default and all work stays offline. Read
+[TEMPORAL_IDENTITY.md](TEMPORAL_IDENTITY.md) for the matched experiment, provisional
+reference protocol, limitations and repeatable commands. The recordings inspected
+for this change are development clips; they are no longer a fresh test session.
+
+### Original-file and native-detail evaluation
+
+The unlabelled runner accepts optional `--processing-short-edge 720` for a
+matched processing-scale comparison of higher-resolution originals with earlier
+720p exports. It only downsamples, using area interpolation, before camera-motion
+estimation and inference. Input seeds are in the oriented decoded **source**
+coordinates; reports preserve both source and processing seeds, dimensions and
+exact XY scales. Without the option, existing native processing is unchanged.
+The review labels downsampled frames as processing previews rather than original
+resolution. Source files and earlier runs are never overwritten.
+
+`probe_native_detail.py` is a separate detector diagnostic. Predetermined frames
+use the saved 720-coordinate track's query region. The original frame and its
+own downsampled version use the same model and confidence. Native 384-pixel crops
+cover the exact projected scene region with more tiles; no association is run.
+Source, detector, weights, resize and ROI provenance are checked and recorded.
+Circles in its viewer are raw proposals, not verified balls or tracker paths.
+More proposals do not establish higher accuracy, colour benefit or shot outcome.
+
+```powershell
+python -m experiments.ball_tracking.track_unlabelled_video --cases data/reference-review/new-session-20261120-originals/cases.json --weights data/reference-review/ball-finetune/20261117T004329962346Z/train/weights/best.pt --output data/reference-review/new-session-20261120-originals/runs-next --association motion-recovery --processing-short-edge 720 --threads 8
+python -m experiments.ball_tracking.probe_native_detail --cases data/reference-review/new-session-20261120-originals/cases.json --runs data/reference-review/new-session-20261120-originals/runs-next --weights data/reference-review/ball-finetune/20261117T004329962346Z/train/weights/best.pt --output data/reference-review/new-session-20261120-originals/native-detail-next --threads 8
+```
+
+The mail originals in this session include 1080p white/neon-green recordings and
+4K yellow recordings. Colour and capture resolution are confounded. Matched
+original-versus-Discord files support a transfer-fidelity comparison, not a pure
+1080p-versus-4K camera benchmark. The existing strict identity-reference comparator
+continues to reject different source bytes; these cross-encode checks are kept
+separate. No production perception, feedback or outcome contract changes here.
+
+### Opt-in native gap evidence
+
+`--native-detail-fallback` adds a small native-resolution search only when the
+720-coordinate detector has no proposal within 32 pixels of its causal query.
+Existing reduced-image proposals are retained. Additional proposals must remain
+within that local gate; this is not a full-frame detector reset or a new seed.
+The option requires `--association motion-recovery --processing-short-edge 720`.
+
+The first native-only fusion ablation incorrectly followed a fixed pale object
+beside the goal in the white-ball clip. Its larger selected-frame count is not
+an improvement in identity. That run and its exact implementation are retained
+under the original-file session's ignored evaluation directory.
+
+The current opt-in pilot therefore checks extra proposals against the first
+source image. SIFT features and RANSAC register the initial background to the
+current image; unsupported registration withholds extra evidence. Similar
+registered patches are treated as ambiguous pre-existing background. Extra
+observations in the initial seed region are withheld, leaving that phase to the
+primary detector. This prevents a supplemental boot detection at contact from
+bootstrapping a new target path; it does not claim to classify all occlusions.
+Outside that region, extra
+proposals can use the last two consecutive accepted detector observations for
+continuity; otherwise each native hypothesis needs three consistent observations.
+Several plausible objects remain separate candidates for the unchanged
+association layer. Missing frames stay missing;
+no earlier gaps are filled, identity is never marked verified, and filename
+colour/outcome metadata and evaluation references are not read by inference.
+
+This image registration is **not** goal calibration, 3D reconstruction, depth,
+contact detection or proof of identity. Moving nets, occlusion, parallax, similar
+objects and very small balls can still defeat these checks. A single-patch seed
+colour veto was rejected because a printed ball panel can supply the wrong hue;
+no colour gate is enabled. The legacy/default runner and production pipeline
+remain unchanged. This mode is an inspected-session development experiment.
+
+Native tile duplicates now merge by box IoU rather than distance between centres.
+The earlier 15-processing-pixel radius removed a correct low-score yellow-ball
+box beside a different higher-score goal-area object. Non-overlapping boxes now
+survive even when close together; this preserves evidence for association rather
+than asserting that either object is the target. The initial matched native-detail
+diagnostic preserves its original radius merge as a frozen control. The new
+native-only merger does not change that diagnostic or the baseline detector.
+The local native search also explicitly includes a tile centred on the causal
+query. A regular grid alone can straddle that point; the query-centred tile is
+deduplicated when the grid already contains it. This adds source context rather
+than changing the target-admission gate or creating image detail.
+
+The registration follows the [OpenCV feature matching and homography workflow](https://docs.opencv.org/4.x/d1/de0/tutorial_py_feature_homography.html).
+
+```powershell
+python -m experiments.ball_tracking.track_unlabelled_video --cases data/reference-review/new-session-20261120-originals/cases.json --weights data/reference-review/ball-finetune/20261117T004329962346Z/train/weights/best.pt --output data/reference-review/new-session-20261120-originals/native-verified-next --association motion-recovery --processing-short-edge 720 --native-detail-fallback --threads 8
+```

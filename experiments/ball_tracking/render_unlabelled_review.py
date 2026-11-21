@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = Path(__file__).with_name("closed_loop_review.html")
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
 _CLIP_ID = re.compile(r"[A-Za-z0-9_-]+\Z")
+_SPLIT_LABELS = {
+    "unseen_session_unlabelled": "unseen session · unlabelled",
+    "inspected_session_unlabelled": "inspected session · development · unlabelled",
+}
 
 
 def _finite_number(value: object, description: str) -> float:
@@ -33,6 +37,38 @@ def _point(value: object, description: str, *, optional: bool = False) -> list[f
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise ValueError(f"{description} must be a two-coordinate point")
     return [_finite_number(value[0], description), _finite_number(value[1], description)]
+
+
+def _frame_transform(report: dict, width: int, height: int) -> dict | None:
+    """Check optional source-to-processing provenance without relabelling old runs."""
+    if "frame_transform" not in report:
+        return None
+    transform = report["frame_transform"]
+    if not isinstance(transform, dict):
+        raise ValueError("frame_transform must be an object")
+    for key in ("source_width", "source_height", "width", "height"):
+        value = transform.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"Invalid frame_transform {key}")
+    if (transform["width"], transform["height"]) != (width, height):
+        raise ValueError("frame_transform processing dimensions differ from report")
+    source_width, source_height = transform["source_width"], transform["source_height"]
+    if width > source_width or height > source_height:
+        raise ValueError("frame_transform must not upscale the source")
+    for key, expected in (("scale_x", width / source_width), ("scale_y", height / source_height)):
+        scale = _finite_number(transform.get(key), f"frame_transform {key}")
+        if not math.isclose(scale, expected, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError(f"frame_transform {key} disagrees with dimensions")
+    downsampled = (width, height) != (source_width, source_height)
+    expected_status = "downsampled" if downsampled else "native"
+    expected_interpolation = "INTER_AREA" if downsampled else "none"
+    if transform.get("status") != expected_status:
+        raise ValueError("frame_transform status disagrees with dimensions")
+    if transform.get("interpolation") != expected_interpolation:
+        raise ValueError("Invalid frame_transform interpolation")
+    return {key: transform[key] for key in (
+        "source_width", "source_height", "width", "height", "scale_x", "scale_y",
+        "status", "interpolation")}
 
 
 def _frame_map(items: object, description: str, expected: list[int]) -> dict[int, dict]:
@@ -77,12 +113,16 @@ def _source_image(directory: Path, image_name: object) -> Path:
 
 
 def load_clip(report_path: Path, output: Path, reports_dir: Path) -> dict:
-    """Validate one saved run and copy its original frames into the review."""
+    """Validate one saved run and copy its saved frames into the review."""
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(report, dict) or report.get("status") != "offline_pilot_not_production":
         raise ValueError(f"Expected an offline pilot report: {report_path}")
-    if report.get("split") != "unseen_session_unlabelled":
-        raise ValueError(f"Expected an unlabelled unseen-session report: {report_path}")
+    split = report.get("split")
+    if split not in _SPLIT_LABELS:
+        raise ValueError(f"Expected an unlabelled offline-session report: {report_path}")
+    inspected = split == "inspected_session_unlabelled"
+    if inspected and report.get("association_method") not in ("temporal", "recovery", "motion-recovery"):
+        raise ValueError(f"Expected temporal association for inspected-session report: {report_path}")
     clip = report.get("clip")
     if not isinstance(clip, str) or not _CLIP_ID.fullmatch(clip):
         raise ValueError("Invalid clip identifier")
@@ -100,6 +140,7 @@ def load_clip(report_path: Path, output: Path, reports_dir: Path) -> dict:
     if (isinstance(width, bool) or isinstance(height, bool) or not isinstance(width, int)
             or not isinstance(height, int) or width <= 0 or height <= 0):
         raise ValueError(f"Invalid source image dimensions: {clip}")
+    transform = _frame_transform(report, width, height)
     start, end = report.get("start_frame"), report.get("end_frame")
     if (isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int)
             or not isinstance(end, int) or start < 0 or end < start):
@@ -152,21 +193,37 @@ def load_clip(report_path: Path, output: Path, reports_dir: Path) -> dict:
         source = _source_image(directory, info.get("image"))
         copied_name = f"{frame:06d}{source.suffix.lower()}"
         shutil.copyfile(source, destination / copied_name)
-        records.append({
+        record = {
             "frame": frame, "time_s": time_s, "width": width, "height": height,
             "image": f"frames/{clip}/{copied_name}", "selected": selected,
             "predicted": predicted, "score": score, "label": None,
             "candidates": checked_candidates, "error_px": None,
-        })
+        }
+        if inspected:
+            reason, missing_run = selection.get("reason"), selection.get("missing_run")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError(f"Missing temporal association reason: {clip} {frame}")
+            if isinstance(missing_run, bool) or not isinstance(missing_run, int) or missing_run < 0:
+                raise ValueError(f"Invalid temporal missing run: {clip} {frame}")
+            record.update(association_reason=reason, missing_run=missing_run)
+        records.append(record)
 
     report_name = report_path.resolve().relative_to(reports_dir.resolve()).as_posix()
-    return {
+    title = Path(source_name).name
+    if transform is not None and transform["status"] == "downsampled":
+        title += (f" · source {transform['source_width']}×{transform['source_height']}; "
+                  f"preview {width}×{height}")
+    result = {
         "id": clip,
-        "title": Path(source_name).name,
-        "split": "unseen session · unlabelled",
+        "title": title,
+        "split": _SPLIT_LABELS[split],
+        "split_kind": split,
         "fps": fps, "start": start, "end": end, "seed": seed,
         "report_name": report_name, "frames": records,
     }
+    if transform is not None:
+        result["frame_transform"] = transform
+    return result
 
 
 def render_review(reports_dir: Path, output: Path) -> tuple[Path, int, int]:
@@ -178,14 +235,34 @@ def render_review(reports_dir: Path, output: Path) -> tuple[Path, int, int]:
     clips = [load_clip(report, output, reports_dir) for report in reports]
     if len({clip["id"] for clip in clips}) != len(clips):
         raise ValueError("Reports contain repeated clip identifiers")
+    has_inspected = any(clip["split_kind"] == "inspected_session_unlabelled" for clip in clips)
+    has_unseen = any(clip["split_kind"] == "unseen_session_unlabelled" for clip in clips)
+    has_downsampled = any(clip.get("frame_transform", {}).get("status") == "downsampled" for clip in clips)
+    if has_inspected and has_unseen:
+        subtitle = ("Offline tracks from unseen and previously inspected recording sessions. "
+                    "Inspected clips are development examples using temporal association and a manual start. "
+                    "Selections need visual checking; these unlabelled paths are not accuracy measurements.")
+        badge = "Offline development review • mixed sessions • manual start"
+    elif has_inspected:
+        subtitle = ("Previously inspected development clips using temporal association and a manual start. "
+                    "Inspect selected positions in the original frames; there are no manual labels or accuracy scores here.")
+        badge = "Offline development review • inspected session • temporal association • manual start"
+    else:
+        subtitle = ("Frozen detector on an unseen recording session, started from a manually chosen ball position. "
+                    "Inspect the selected path in the original frames; there are no manual labels or accuracy scores for this review.")
+        badge = "Offline development review • unseen session • manual start"
+    if has_downsampled:
+        subtitle = subtitle.replace("original frames", "saved processing frames")
+        subtitle += (" Downsampled clips show processing previews, not native-resolution original frames; "
+                     "source and preview dimensions appear in their titles.")
     template = TEMPLATE.read_text(encoding="utf-8")
     if template.count("__REVIEW_DATA__") != 1:
         raise ValueError("Review template must contain exactly one data placeholder")
     substitutions = {
         "Ball identity review": "Unlabelled ball-path review",
         "Step through the original frames and compare the selected detector position with the manually marked ball. This review helps diagnose tracking; it does not certify a shot result.":
-            "Frozen detector on an unseen recording session, started from a manually chosen ball position. Inspect the selected path in the original frames; there are no manual labels or accuracy scores for this review.",
-        "Offline development review • manual start": "Offline development review • unseen session • manual start",
+            subtitle,
+        "Offline development review • manual start": badge,
         '<div class="metric"><span class="metric-label">Distance to manual mark</span>':
             '<div class="metric" style="display:none"><span class="metric-label">Distance to manual mark</span>',
         '<span class="key"><span class="swatch manual"':
@@ -196,11 +273,26 @@ def render_review(reports_dir: Path, output: Path) -> tuple[Path, int, int]:
         "with selected AI candidate and optional manual annotations": "with selected AI candidate",
         "160 × 160 source pixels around the AI selection; cyan shows the manual box when enabled.":
             "160 × 160 source pixels around the AI selection; this is an unverified detector position.",
+        'el("frame-meta").textContent = `Frame ${frame.frame} · ${time} (frame/FPS estimate) · ${fps}`;':
+            'el("frame-meta").textContent = `Frame ${frame.frame} · ${time} (frame/FPS estimate) · ${fps}`'
+            ' + (typeof frame.association_reason === "string" && Number.isInteger(frame.missing_run)'
+            ' ? ` · Association: ${frame.association_reason.replaceAll("_", " ")} · missing run: ${frame.missing_run}`'
+            ' : "");',
     }
     for old, new in substitutions.items():
         if old not in template:
             raise ValueError(f"Review template changed; missing text: {old[:50]}")
         template = template.replace(old, new)
+    if has_downsampled:
+        for old, new in {
+            "Current original frame": "Current processing frame",
+            "Original image pixels": "Processing image pixels",
+            "160 × 160 source pixels": "160 × 160 processing pixels",
+            "`Original frame ${frame.frame}": "`Processing frame ${frame.frame}",
+        }.items():
+            if old not in template:
+                raise ValueError(f"Review template changed; missing text: {old}")
+            template = template.replace(old, new)
     embedded = json.dumps({"clips": clips}, ensure_ascii=False).replace("<", "\\u003c")
     target = output / "index.html"
     target.write_text(template.replace("__REVIEW_DATA__", embedded), encoding="utf-8")
