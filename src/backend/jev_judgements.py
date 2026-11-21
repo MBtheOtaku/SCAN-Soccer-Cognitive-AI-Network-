@@ -180,6 +180,21 @@ def _build_jev_state(
         # Important epistemic rules for our workflow.
         "evidence_rules": [
             (
+                "rep.training_intention is the player's declared objective, not "
+                "evidence that power, curl or target accuracy was achieved. "
+                "reported_outcome is player-reported and must not populate "
+                "machine-observed goal, speed, contact or trajectory fields."
+            ),
+            (
+                "rep.intention_feedback contains deterministic metric availability. "
+                "An unavailable metric cannot be estimated from pose angles, "
+                "ankle speed, detection rate, pixel displacement or the intention. "
+                "Published reference cohorts are context, not universal thresholds; "
+                "do not give professional comparisons or scores. Dip alone does "
+                "not establish power and projected image curvature does not "
+                "establish physical curl or spin."
+            ),
+            (
                 "Do not infer measurements or events "
                 "that are absent from the supplied state."
             ),

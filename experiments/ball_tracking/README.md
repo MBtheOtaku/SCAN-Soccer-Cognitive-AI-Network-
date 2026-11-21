@@ -1,5 +1,10 @@
 # Hand-seeded post-kick ball-motion pilot
 
+The latest guarded detector and motion-recovery runner also has an opt-in
+[saved-rep replay adapter](../../docs/experimental-tracking.md). That adapter
+uses one initial ball tap and keeps every result separate from coaching and
+outcomes. The experiments and historical results below remain research tools.
+
 This is an **offline experiment**, separate from SCAN's production perception
 pipeline. It asks whether motion can recover a ball trajectory after a human
 supplies one reviewed contact-frame box and an approximate goal centre. One

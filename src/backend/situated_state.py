@@ -110,6 +110,9 @@ class SituatedState:
     recent_improvement: Optional[bool]
     # Optional for compatibility with existing callers and saved states.
     strike_window: Optional[dict] = None
+    # Declared task context is separate from measured shot performance.
+    training_intention: Optional[dict] = None
+    intention_feedback: Optional[dict] = None
 
     # -----------------------------------------------------
     # Utility

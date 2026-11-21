@@ -6,6 +6,12 @@ recording, configurable API URLs, trusted HTTPS and server start commands.
 Ball tracking development: see the [active workflow and current limitations](docs/ball-tracking.md).
 Superseded tracking experiments are isolated in the [research archive](experiments/ball_tracking/archive/README.md).
 
+Training intentions: see [power, curl and placement measurements](docs/training-intention.md)
+for the per-clip flow, formulas, evidence requirements and published reference context.
+
+Saved-rep experiments: see [single-tap ball tracking and replay](docs/experimental-tracking.md).
+New Expo recordings also support [microphone audio](src/mobile/README.md#recording-sound).
+
 This version is tuned for the first SCAN test clip: a fixed 1280x720 side-angle shooting video.
 It crops the pose model to the player region, draws the skeleton back onto the original frame,
 computes simple pose features, estimates the probable striking leg/moment using ankle motion
@@ -45,7 +51,20 @@ Outputs:
 
 The player is relatively small in the full 1280x720 frame. The fixed ROI covers the full run-up,
 strike, and early follow-through while giving the pose estimator many more useful pixels.
-The ROI is only for this first fixed-camera test. Later we should replace it with player tracking.
+Without a manual ROI, the backend now samples the local person detector at
+`data/models/yolo11n.pt` and builds a padded movement envelope before running MediaPipe.
+This also supports decoded portrait phone footage without resizing the saved video.
+The detector weights must already be present; analysis never downloads them. Missing weights
+or failed detector inference retain the pose-only/full-frame fallback. Multiple detected people
+leave automatic player identity uncertain and withhold pose measurements.
+
+The summary's `pose_tracking` section records the crop source, native coordinates and counts
+of accepted, rejected and missing pose frames. The landmark-confidence check (0.35) and
+provisional whole-clip coverage gate (60%) are unchanged. A player outside the camera frame
+cannot be recovered by cropping, and required landmarks outside the crop are rejected even
+when their model confidence is high. Keep both feet and the whole body visible through the approach
+and follow-through. Higher accepted-frame coverage is not validated biomechanics or confirmed
+ball-contact timing.
 
 ## Important interpretation
 

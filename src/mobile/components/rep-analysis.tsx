@@ -4,15 +4,21 @@ import { Action, BallProgress } from './controls';
 import { analyseRep, checkBackend, type AnalysisResult } from '../lib/backend';
 import type { Rep } from '../lib/reps';
 import { ui } from '../lib/theme';
+import { intentionKey, intentionLabel, normalizeIntention } from '../lib/training-intention';
+import { IntentionFeedback } from './intention-feedback';
 
 export function RepAnalysis({ rep }: { rep: Rep }) {
+  // A changed intention is a new analysis context: reset the view and abort the previous instance.
+  return <AnalysisForIntention key={rep.name + ':' + intentionKey(rep.trainingIntention)} rep={rep} />;
+}
+
+function AnalysisForIntention({ rep }: { rep: Rep }) {
   const [phase, setPhase] = useState<'idle' | 'checking' | 'analysing'>('idle');
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const pending = useRef<AbortController | null>(null);
   const mounted = useRef(false);
-
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; pending.current?.abort(); };
@@ -21,6 +27,7 @@ export function RepAnalysis({ rep }: { rep: Rep }) {
   async function run(analyse: boolean) {
     if (pending.current) return;
     const controller = new AbortController();
+    const snapshot = { ...rep, trainingIntention: normalizeIntention(rep.trainingIntention) };
     pending.current = controller;
     setError(null); setStatus(null); setPhase('checking');
     if (analyse) setResult(null);
@@ -29,14 +36,16 @@ export function RepAnalysis({ rep }: { rep: Rep }) {
       if (controller.signal.aborted || !mounted.current) return;
       if (analyse) {
         setPhase('analysing');
-        const response = await analyseRep(rep, controller.signal);
+        const response = await analyseRep(snapshot, controller.signal);
         if (!controller.signal.aborted && mounted.current) setResult(response);
-      } else setStatus('Connected to SCAN.');
+      } else if (mounted.current) setStatus('Connected to SCAN.');
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : 'The request failed. Your clip is safe.');
     } finally {
-      pending.current = null;
-      if (mounted.current) setPhase('idle');
+      if (pending.current === controller) {
+        pending.current = null;
+        if (mounted.current) setPhase('idle');
+      }
     }
   }
 
@@ -44,6 +53,7 @@ export function RepAnalysis({ rep }: { rep: Rep }) {
   return <View style={ui.card}>
     <Text style={ui.badge}>BACKEND ANALYSIS</Text>
     <Text style={ui.body}>Analyse this saved video on your laptop. Keep SCAN open while waiting.</Text>
+    <Text style={ui.small}>Intention: {intentionLabel(rep.trainingIntention)}. Editing it clears the previous report; analyse again for the updated context.</Text>
     <Text style={ui.small}>Goal calibration is not connected to native uploads yet, so shot outcome remains unknown. Opponent-pressure review is off for this first version.</Text>
     <Action title="Check backend connection" secondary disabled={busy}
       onPress={() => { void run(false); }} />
@@ -58,6 +68,8 @@ export function RepAnalysis({ rep }: { rep: Rep }) {
     {result && <View style={{ gap: 16 }}>
       <Text style={ui.heading}>Session report</Text>
       <Text style={ui.small}>Analysis ID: {result.id}</Text>
+      {result.intentionFeedback ? <IntentionFeedback key={result.id} feedback={result.intentionFeedback} />
+        : <Text style={ui.small}>No intention-specific measurements were returned for this analysis.</Text>}
       {result.sections.map(section => <View key={section.label} style={{ gap: 6 }}>
         <Text style={ui.heading}>{section.label}</Text>
         <Text style={ui.body}>{section.text}</Text>

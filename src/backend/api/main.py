@@ -48,6 +48,12 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# A separate, opt-in replay experiment. Its paths never enter the analysis,
+# SituatedState, Jev, controller or coaching-report payloads below.
+from src.backend.experimental_tracking import create_tracking_router
+
+app.include_router(create_tracking_router(PROJECT_ROOT))
+
 
 @app.exception_handler(StarletteHTTPException)
 async def log_upload_parse_error(request, exc):
@@ -161,6 +167,7 @@ async def analyze_video(
     athlete_start_side: str | None = Form(default=None),
     goal_setup: str | None = Form(default=None),
     goal_reference: UploadFile | None = File(default=None),
+    training_intention: str | None = Form(default=None),
 ):
     """
     Upload a soccer drill video and run the current
@@ -172,6 +179,19 @@ async def analyze_video(
     Example for IMG_5702.mov:
         540,280,1180,650
     """
+
+    # Validate declared task context before saving or running perception. It
+    # cannot contain client-supplied measurements or confidence overrides.
+    from src.backend.training_intention import parse_training_intention
+    try:
+        intention = parse_training_intention(
+            training_intention if isinstance(training_intention, str) else None
+        )
+    except ValueError as exc:
+        await video.close()
+        if goal_reference is not None and hasattr(goal_reference, "close"):
+            await goal_reference.close()
+        raise HTTPException(status_code=400, detail=f"Invalid training intention: {exc}")
 
     # Validate optional setup before saving or running the existing pipeline.
     from src.backend.goal_setup import parse_goal_setup, decode_reference
@@ -273,6 +293,7 @@ async def analyze_video(
             goal_calibration_override=calibration,
             use_legacy_goal_calibration=False,
             goal_reference_path=reference_path,
+            training_intention=intention,
         )
 
     except Exception as exc:
@@ -328,6 +349,8 @@ async def analyze_video(
         "pressure_report": pressure_report,
         "goal_motion": analysis_data.get("goal_motion"),
         "goal_setup": analysis_data.get("goal_setup"),
+        "training_intention": analysis_data.get("training_intention", intention),
+        "intention_feedback": analysis_data.get("intention_feedback"),
 
         "summary": asdict(summary),
 

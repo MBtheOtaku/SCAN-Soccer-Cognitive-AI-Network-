@@ -37,6 +37,8 @@ def _build_evidence_packet(
             "rep_id": situated_state.rep_id,
             "drill_type": situated_state.drill_type,
             "task_goal": situated_state.task_goal,
+            "training_intention": situated_state.training_intention,
+            "intention_feedback": situated_state.intention_feedback,
 
             "pose_coverage": situated_state.pose_coverage,
             "perception_usable": situated_state.perception_usable,
@@ -190,6 +192,16 @@ CRITICAL RULES
 - Do not manufacture criticism merely to give feedback.
 - Treat Jev judgements as probabilities, not certainty.
 - Separate technique quality from shot outcome.
+- Training intention states the player's goal, not an observed achievement.
+  Keep the report relevant to power, curl or placement when declared, without
+  assuming that shot type was successfully produced.
+- Respect intention_feedback metric availability. Never fill an unavailable
+  speed, travel time, curl, spin, dip or target-error value from other fields.
+  Published cohort references are context only: do not produce professional
+  ratings, percentiles, ratios or above/below-baseline judgements.
+- reported_outcome is explicitly player-reported, not machine-verified. Keep
+  that attribution whenever mentioning it; it cannot establish technique,
+  goal-plane crossing, shot speed or placement precision.
 - A successful shot does not prove perfect technique.
 - Imperfect technique does not automatically make the outcome poor.
 - If evidence is insufficient, explicitly remain uncertain.

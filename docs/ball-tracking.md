@@ -1,5 +1,11 @@
 # Ball tracking: active workflow
 
+The guarded motion-recovery tracker now has an opt-in app replay path. See
+[experimental tracking in saved reps](experimental-tracking.md) for single-tap
+initialisation, job progress, replay overlays and limitations. Its output remains
+separate from normal analysis, SituatedState, Jev judgements and coaching.
+The dated experiment results below describe earlier development evidence.
+
 This is the entry point for ball-tracking development. Updated 15 November 2026.
 The mobile app and backend are operational prototypes; continuous ball localisation,
 identity through contact/flight, and shot outcome are not validated.

@@ -18,7 +18,8 @@
       "expo-camera",
       {
         "cameraPermission": "Allow SCAN to record your training repetitions.",
-        "recordAudioAndroid": false
+        "microphonePermission": "Allow SCAN to include sound in your recorded training repetitions.",
+        "recordAudioAndroid": true
       }
     ],
     "expo-asset",

@@ -22,9 +22,15 @@ def api(monkeypatch, tmp_path):
         prototype_feedback: str = "Repeat the movement."
 
     def existing_analyze(video, model, annotated, csv, report, roi, **kwargs):
+        from src.backend.training_intention import build_intention_feedback
         module.received_goal_options = kwargs
         calls.append((video.suffix, video.read_bytes(), roi))
-        report.write_text(json.dumps({"coaching_report": {"spoken_cue": None}}))
+        intention = kwargs.get("training_intention")
+        report.write_text(json.dumps({
+            "coaching_report": {"spoken_cue": None},
+            "training_intention": intention,
+            "intention_feedback": build_intention_feedback(intention),
+        }))
         return Summary()
 
     # Isolate only the expensive import. The actual API upload handler is exercised.
@@ -61,6 +67,44 @@ def test_invalid_extension_does_not_run_analysis(api):
         asyncio.run(module.analyze_video(upload, roi=None))
     assert error.value.status_code == 400
     assert not calls
+
+
+def test_multipart_training_context_is_per_request_and_never_measurement(api):
+    from fastapi.testclient import TestClient
+    module, calls = api
+    client = TestClient(module.app)
+    for shot_type in ("power", "curl", "placement"):
+        intention = {"shot_type": shot_type, "target_zone": "upper_left", "reported_outcome": "goal"}
+        response = client.post("/analyze", files={"video": ("rep.mov", b"clip", "video/quicktime")},
+                               data={"training_intention": json.dumps(intention)})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["training_intention"] == intention
+        assert module.received_goal_options["training_intention"] == intention
+        feedback = body["intention_feedback"]
+        assert feedback["shot_type"] == shot_type
+        assert all(item["value"] is None for item in feedback["metrics"])
+        assert feedback["reported_outcome"] == {"value": "goal", "source": "player_reported", "verified": False}
+    # A later legacy request must not inherit the preceding clip's intention.
+    legacy = client.post("/analyze", files={"video": ("rep.mov", b"clip", "video/quicktime")}).json()
+    assert legacy["training_intention"] == {"shot_type": "unspecified", "target_zone": None, "reported_outcome": None}
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("raw", [
+    '{"shot_type":"knuckle"}', '{"shot_type":true}',
+    '{"shot_type":"power","measurements":{"speed":100}}',
+    '{"shot_type":"power","shot_type":"curl"}', 'null', '[]', 'x' * 1025,
+])
+def test_invalid_intention_rejected_before_saving_or_analysis(api, raw):
+    module, calls = api
+    upload = UploadFile(filename="rep.mov", file=io.BytesIO(b"clip"))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(module.analyze_video(upload, roi=None, training_intention=raw))
+    assert error.value.status_code == 400
+    assert not calls
+    assert upload.file.closed
+    assert not list(module.INPUT_DIR.glob("*.mov"))
 
 
 def test_cors_uses_explicit_origins(api):

@@ -1246,6 +1246,20 @@ def build_coaching_report(
             )
         )
 
+    # Intention changes the written task context, not intervention policy or
+    # the spoken cue. Keep this useful even when external services fail.
+    intention = situated_state.training_intention or {}
+    shot_type = intention.get("shot_type", "unspecified")
+    if shot_type in {"power", "curl", "placement"}:
+        overall_assessment = f"Training intention: {shot_type}. {overall_assessment}"
+        if primary_issue in {None, "none", "insufficient_evidence"}:
+            practice_objectives = {
+                "power": "For this power set, keep the starting position and intended target consistent so attempts can be compared.",
+                "curl": "For this curl set, choose the intended bend direction and keep the starting position and target consistent.",
+                "placement": "For this placement set, choose a target before the next attempt and keep the starting position consistent.",
+            }
+            next_rep_recommendation = practice_objectives[shot_type]
+
     # -----------------------------------------------------
     # Final report
     # -----------------------------------------------------

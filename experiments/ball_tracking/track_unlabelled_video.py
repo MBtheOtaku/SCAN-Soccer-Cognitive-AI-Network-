@@ -29,6 +29,10 @@ ASSOCIATION_FILES = {
 }
 
 
+class TrackingCancelledError(RuntimeError):
+    """A caller cancelled the optional interactive run at a frame boundary."""
+
+
 def association_hashes(method: str) -> dict:
     hashes = {"association": file_sha256(Path(__file__).with_name(ASSOCIATION_FILES[method]))}
     if method in ("recovery", "motion-recovery"):
@@ -76,11 +80,24 @@ def prepare_frame(image, processing_short_edge: int | None = None):
 def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
               progress_every: int = 15, association: str = "legacy",
               processing_short_edge: int | None = None,
-              native_detail_fallback: bool = False) -> dict:
+              native_detail_fallback: bool = False, *, save_frames: bool = True,
+              progress_callback=None, cancel_check=None,
+              maximum_frames: int | None = None,
+              maximum_runtime_s: float | None = None,
+              maximum_source_pixels: int | None = None,
+              maximum_source_dimension: int | None = None) -> dict:
     import cv2
 
     if association not in ASSOCIATION_FILES:
         raise ValueError("Choose legacy, temporal, recovery or motion-recovery association")
+    if type(save_frames) is not bool or type(progress_every) is not int or progress_every < 1:
+        raise ValueError("Expected a boolean save_frames and positive progress interval")
+    for limit in (maximum_frames, maximum_source_pixels, maximum_source_dimension):
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise ValueError("Optional frame and image limits must be positive integers")
+    if maximum_runtime_s is not None and (type(maximum_runtime_s) not in (int, float)
+            or not math.isfinite(maximum_runtime_s) or maximum_runtime_s <= 0):
+        raise ValueError("Optional runtime limit must be finite and positive")
     if native_detail_fallback:
         if processing_short_edge != 720 or association != "motion-recovery":
             raise ValueError("Native fallback requires motion-recovery and 720-short-edge processing")
@@ -100,7 +117,8 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
     if report_path.exists():
         raise FileExistsError(f"Preserve previous results; choose a new output: {report_path}")
     frames_dir = destination / "frames"
-    frames_dir.mkdir(exist_ok=True)
+    if save_frames:
+        frames_dir.mkdir(exist_ok=True)
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise ValueError(f"Could not open video: {source}")
@@ -118,15 +136,28 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
     number, width, height = 0, None, None
     frame_transform = None
     started = time.perf_counter()
+
+    def checkpoint():
+        if cancel_check is not None and cancel_check():
+            raise TrackingCancelledError("Tracking was cancelled.")
+        if maximum_runtime_s is not None and time.perf_counter() - started > maximum_runtime_s:
+            raise TimeoutError("Tracking exceeded the configured runtime limit.")
+
     try:
         while True:
+            checkpoint()
             ok, image = capture.read()
             if not ok:
                 break
+            if maximum_frames is not None and number >= maximum_frames:
+                raise ValueError("Decoded video exceeds the configured frame limit")
+            source_height, source_width = image.shape[:2]
+            if ((maximum_source_pixels is not None and source_height * source_width > maximum_source_pixels)
+                    or (maximum_source_dimension is not None and max(source_height, source_width) > maximum_source_dimension)):
+                raise ValueError("Decoded video exceeds the configured image-size limit")
             if number < start:
                 number += 1
                 continue
-            source_height, source_width = image.shape[:2]
             if frame_transform is not None and (source_width, source_height) != (
                     frame_transform["source_width"], frame_transform["source_height"]):
                 raise ValueError("Decoded source image dimensions changed within video")
@@ -178,14 +209,20 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
                 previous = image.copy()
             if selected["detected"]:
                 accepted_frames = (accepted_frames + [number])[-2:]
-            filename = f"{number:06d}.jpg"
-            if not cv2.imwrite(str(frames_dir / filename), image, [cv2.IMWRITE_JPEG_QUALITY, 95]):
-                raise OSError(f"Could not write review frame {number}")
+            if save_frames:
+                filename = f"{number:06d}.jpg"
+                if not cv2.imwrite(str(frames_dir / filename), image, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+                    raise OSError(f"Could not write review frame {number}")
             rows.append(row)
             path.append(selected)
-            frame_files.append({"frame": number, "image": filename, "time_s": number / fps,
-                                "width": width, "height": height})
+            if save_frames:
+                frame_files.append({"frame": number, "image": filename, "time_s": number / fps,
+                                    "width": width, "height": height})
             number += 1
+            checkpoint()
+            if progress_callback is not None:
+                progress_callback({"processed_frames": len(path), "total_frames": max(0, reported_frames - start),
+                                   "frame": number - 1})
             if len(path) == 1 or len(path) % progress_every == 0:
                 print(f"{case['clip']}: frame {number - 1}/{reported_frames - 1}; "
                       f"{'candidate selected' if selected['detected'] else 'no selected detection'}",
@@ -221,7 +258,8 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
                   "detector": file_sha256(ROOT / "experiments/ball_tracking/closed_loop_detector_track.py"),
                   **association_hashes(association)},
               "elapsed_s": time.perf_counter() - started,
-              "frames_directory": str(frames_dir.resolve()),
+              "frames_directory": str(frames_dir.resolve()) if save_frames else None,
+              "frames_saved": save_frames,
               "processed_frames": len(path),
               "selected_detection_frames": sum(item["detected"] for item in path),
               "frames_without_selected_detection": sum(not item["detected"] for item in path),

@@ -3,12 +3,16 @@ import * as FS from 'expo-file-system/legacy';
 import { File } from 'expo-file-system';
 import { fetch } from 'expo/fetch';
 import type { Rep } from './reps';
+import { intentionKey, normalizeIntention, type TrainingIntention } from './training-intention';
+import { parseIntentionFeedback, type IntentionFeedback } from './intention-feedback';
 
 export type ReportSection = { label: string; text: string };
 export type AnalysisResult = {
   id: string;
   sections: ReportSection[];
   fallback: string | null;
+  trainingIntention: TrainingIntention;
+  intentionFeedback: IntentionFeedback | null;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -73,6 +77,7 @@ export async function checkBackend(signal: AbortSignal) {
 }
 
 export async function analyseRep(rep: Rep, signal: AbortSignal): Promise<AnalysisResult> {
+  const trainingIntention = normalizeIntention(rep.trainingIntention);
   const info = await FS.getInfoAsync(rep.uri);
   if (!info.exists || info.isDirectory || info.size <= 0) {
     throw new Error('This local recording is unavailable. Try playing it first.');
@@ -81,6 +86,7 @@ export async function analyseRep(rep: Rep, signal: AbortSignal): Promise<Analysi
   // SDK 58's Expo fetch needs a File/Blob, not a legacy { uri, name, type } object.
   form.append('video', new File(rep.uri), rep.name);
   form.append('goal_setup', 'null');
+  form.append('training_intention', JSON.stringify(trainingIntention));
   // Let fetch supply the multipart boundary; do not set Content-Type yourself.
   const data = await request('/analyze', { method: 'POST', body: form }, signal, 600_000);
   const id = text(data.analysis_id);
@@ -89,6 +95,9 @@ export async function analyseRep(rep: Rep, signal: AbortSignal): Promise<Analysi
     throw new Error('SCAN returned an incomplete analysis response. Your local clip is unchanged.');
   }
   const report = object(data.coaching_report);
+  if (!object(data.training_intention) || intentionKey(data.training_intention) !== intentionKey(trainingIntention)) {
+    throw new Error('The backend did not confirm this rep’s training intention. Restart the updated backend and retry.');
+  }
   const fields = [
     ['overall_assessment', 'Assessment'],
     ['what_went_well', 'What went well'],
@@ -103,7 +112,7 @@ export async function analyseRep(rep: Rep, signal: AbortSignal): Promise<Analysi
     if (value) sections.push({ label, text: value });
   }
   return {
-    id, sections,
+    id, sections, trainingIntention, intentionFeedback: parseIntentionFeedback(data.intention_feedback),
     fallback: sections.length ? null : text(summary.prototype_feedback),
   };
 }

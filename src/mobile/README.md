@@ -3,6 +3,25 @@
 The active recording screen is `src/app/record.tsx`, loaded by Expo Router.
 The older `App.tsx` is not the entry point.
 
+## Recording sound
+
+New recordings default to **Sound**. Enable the camera, then allow microphone
+access before recording. If microphone access was denied, use the microphone
+settings button or deliberately select **Video only** to make a silent clip.
+The preview badge shows **SOUND ON**, **MIC NEEDED** or **VIDEO ONLY**.
+
+The saved original includes the camera's embedded audio, and sharing uses that
+same file without an app transcode. Existing silent recordings cannot recover
+sound. A receiving service may recompress or alter an exported copy.
+
+No new package is required in Expo Go. Restart the stable preview to load the
+changes. A custom native build needs rebuilding to apply the microphone
+permission configuration in `app.json`.
+
+On the phone, record a short rep while speaking, save it, replay it with volume
+up and export it. Check the exported original for sound too. Permission/config
+checks on the laptop do not verify physical microphone capture.
+
 ## Recording quality
 
 Open **Camera settings** on the recording screen. Each newly opened screen
@@ -34,6 +53,25 @@ Use good lighting and keep the camera steady. Frame rate and exposure remain
 device-controlled: the installed Expo Camera SDK 58 API does not expose
 manual native shutter-speed or frame-rate settings, or a general live frame
 processor for applying contrast/deblur filters.
+
+## Camera framing
+
+The recording screen uses a portrait 9:16 camera viewport instead of filling
+the previous 4:3 box. Larger preview expands the display without changing
+recording resolution or the lens field of view. Record/Stop sits directly
+below the preview. Optional grid lines and corner guides are display aids;
+they are not detector boxes and are not burned into the saved clip.
+
+Zoom out/in and Reset adjust the native camera's normalized zoom range.
+The percentage is not an optical magnification such as 2x. On iOS, Standard
+and Ultra wide lens choices appear only when the camera reports those physical
+lenses. Other devices retain the default camera and zoom controls. Zoom and
+lens changes are blocked during countdown, recording and saving.
+
+Keep the whole body and both feet visible through the approach and follow-through.
+A wider lens captures more of the pitch but makes the ball smaller; use only
+the extra field of view needed. Check preview framing, lens changes and a saved
+clip on the phone; laptop geometry tests cannot verify physical camera behaviour.
 
 ## Applying changes and checking a phone
 

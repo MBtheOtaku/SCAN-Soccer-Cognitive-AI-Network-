@@ -36,7 +36,11 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test:intention": "node scripts/test-training-intention.cjs",
+    "test:audio": "node scripts/test-capture-audio.cjs",
+    "test:tracking": "node scripts/test-experimental-tracking.cjs",
+    "test:framing": "node scripts/test-camera-framing.cjs"
   },
   "private": true
 }

@@ -1,30 +1,13 @@
-import { useState } from 'react';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useVideoPlayer, VideoView } from 'expo-video';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useEventListener } from 'expo';
 import { Action, BallProgress } from '../../../components/controls';
 import { RepTitleEditor } from '../../../components/rep-title-editor';
 import { RepExport } from '../../../components/rep-export';
 import { repDate, useReps } from '../../../lib/rep-store';
 import { ui } from '../../../lib/theme';
-import type { Rep } from '../../../lib/reps';
 import { RepAnalysis } from '../../../components/rep-analysis';
-
-function Player({ rep }: { rep: Rep }) {
-  const player = useVideoPlayer(rep.uri);
-  const [status, setStatus] = useState(player.status);
-  const [error, setError] = useState<string | null>(null);
-  useEventListener(player, 'statusChange', event => {
-    setStatus(event.status); setError(event.error?.message ?? null);
-  });
-  return <>
-    <View style={s.frame}><VideoView player={player} style={s.video} nativeControls contentFit="contain" /></View>
-    {(status === 'loading' || status === 'idle') && <BallProgress label="Opening your clip…" />}
-    {status === 'error' && <Text style={ui.error}>{error || 'This clip could not be played.'}</Text>}
-  </>;
-}
+import { ExperimentalReplay } from '../../../components/experimental-tracking';
 
 export default function Replay() {
   const { name } = useLocalSearchParams<{ name: string }>();
@@ -38,7 +21,7 @@ export default function Replay() {
       {loading ? <BallProgress label="Opening saved reps…" /> : rep ? <>
         <Text style={ui.body}>{repDate(rep.name).toLocaleString()}</Text>
         <RepTitleEditor key={rep.name} rep={rep} />
-        <Player rep={rep} />
+        <ExperimentalReplay key={`replay-${rep.name}`} rep={rep} />
         <RepExport key={`export-${rep.name}`} rep={rep} />
         <RepAnalysis key={`analysis-${rep.name}`} rep={rep} />
         <View style={ui.card}><Text style={ui.badge}>SAVED ON THIS PHONE</Text>
@@ -48,5 +31,3 @@ export default function Replay() {
     </ScrollView>
   </SafeAreaView>;
 }
-const s = StyleSheet.create({ frame: { backgroundColor: '#000', borderRadius: 22, overflow: 'hidden' },
-  video: { width: '100%', aspectRatio: 3 / 4 } });

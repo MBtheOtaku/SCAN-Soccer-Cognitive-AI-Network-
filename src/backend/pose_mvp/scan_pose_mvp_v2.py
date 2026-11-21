@@ -19,6 +19,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 from src.backend.situated_state import SituatedState
+from src.backend.training_intention import (
+    build_intention_feedback,
+    parse_training_intention,
+)
 from src.backend.ball_tracking import (
     BallTrackSummary,
     draw_ball_trail,
@@ -185,7 +189,14 @@ def compute_metrics(landmarks, roi: ROI, frame_idx: int, timestamp_s: float) -> 
     required = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP,
                 LEFT_KNEE, RIGHT_KNEE, LEFT_ANKLE, RIGHT_ANKLE]
     conf = min(visibility(landmarks, i) for i in required)
-    if conf < 0.35:
+    if not math.isfinite(conf) or conf < 0.35:
+        return None
+    # MediaPipe can extrapolate a confident ankle/hip beyond the crop when the
+    # player leaves the image. Those coordinates are not visible evidence.
+    if any(
+        not (0.0 <= float(landmarks[i].x) <= 1.0 and 0.0 <= float(landmarks[i].y) <= 1.0)
+        for i in required
+    ):
         return None
 
     ls, rs = px(landmarks, LEFT_SHOULDER, roi), px(landmarks, RIGHT_SHOULDER, roi)
@@ -341,6 +352,7 @@ def build_situated_state(
     ball_summary: BallTrackSummary,
     goal_outcome: GoalOutcome,
     rep_id: int = 1,
+    training_intention: Optional[dict] = None,
 ) -> SituatedState:
     """
     Convert the completed pose-analysis result into a contextual
@@ -376,11 +388,23 @@ def build_situated_state(
     # Build contextual state
     # -----------------------------------------------------
 
+    intention = parse_training_intention(training_intention)
+    task_goals = {
+        "unspecified": "execute a controlled shot",
+        "power": "practise shooting for ball speed",
+        "curl": "practise a deliberately curving shot",
+        "placement": "practise shooting toward the selected target",
+    }
     return SituatedState(
         rep_id=rep_id,
 
         drill_type="shooting",
-        task_goal="execute a controlled shot",
+        task_goal=task_goals[intention["shot_type"]],
+        training_intention=intention,
+        # Current perception has no validated metric 3D trajectory, release
+        # timing or goal-plane intersection. Never promote its old detection
+        # rate/ankle-speed peak into physical shot measurements.
+        intention_feedback=build_intention_feedback(intention),
 
         # The current MVP analyzes the whole uploaded rep,
         # so by this point the action has completed.
@@ -495,14 +519,37 @@ def detect_player_roi(
     model_path: Path,
     samples: int = 20,
     padding: float = 0.35,
+    diagnostics: Optional[dict] = None,
 ) -> ROI:
     """
-    Estimate one fixed player ROI by independently sampling frames
-    across the video.
+    Prefer repeated person detections to locate the player before pose inference.
 
-    This calibration pass uses IMAGE mode because sampled frames are
-    not processed sequentially.
+    The legacy pose-only calibration remains an offline fallback when the local
+    person detector is unavailable. Its sampled frames use IMAGE mode.
     """
+    from src.backend.pose_mvp.player_roi import AmbiguousPlayerCrop, detect_person_crop
+
+    try:
+        person_crop = detect_person_crop(video_path, samples=min(samples, 12))
+        if diagnostics is not None:
+            diagnostics.update(
+                crop_source="person_detector",
+                sampled_frames=person_crop.sampled_frames,
+                person_sample_frames=person_crop.person_frames,
+                person_at_image_edge_sample_frames=person_crop.edge_frames,
+                small_background_proposal_sample_frames=person_crop.background_candidate_frames,
+            )
+        return ROI(*person_crop.bounds)
+    except AmbiguousPlayerCrop:
+        if diagnostics is not None:
+            diagnostics["player_identity_ambiguous"] = True
+        raise
+    except Exception as exc:
+        # Crop assistance is optional; a missing detector must not break pose
+        # analysis or trigger a model download. Preserve the original fallback.
+        print(f"Person calibration unavailable ({type(exc).__name__}). Trying pose calibration.")
+        if diagnostics is not None:
+            diagnostics["person_detector_status"] = "unavailable"
 
     cap = cv2.VideoCapture(str(video_path))
 
@@ -712,6 +759,8 @@ def detect_player_roi(
             "Automatic player ROI was too small."
         )
 
+    if diagnostics is not None:
+        diagnostics["crop_source"] = "pose_calibration_fallback"
     return ROI(
         x1=x1,
         y1=y1,
@@ -730,8 +779,10 @@ def analyze(
     goal_calibration_override: Optional[GoalCalibration] = None,
     use_legacy_goal_calibration: bool = True,
     goal_reference_path: Optional[Path] = None,
+    training_intention: Optional[dict] = None,
 ) -> ShotSummary:
 
+    training_intention = parse_training_intention(training_intention)
     cap = cv2.VideoCapture(str(video))
 
     if not cap.isOpened():
@@ -773,6 +824,7 @@ def analyze(
     # ROI calibration
     # ---------------------------------------------------------
 
+    pose_diagnostics = {"crop_source": "manual" if roi_text else "full_frame_fallback"}
     if roi_text:
         # Manual ROI still supported for debugging/testing.
         roi = parse_roi(
@@ -796,6 +848,7 @@ def analyze(
             roi = detect_player_roi(
                 video,
                 model,
+                diagnostics=pose_diagnostics,
             )
 
             print(
@@ -862,6 +915,9 @@ def analyze(
 
     metrics: List[FrameMetrics] = []
     frame_idx = 0
+    detected_pose_frames = 0
+    rejected_pose_frames = 0
+    identity_rejected_frames = 0
 
     # ---------------------------------------------------------
     # Frame-by-frame pose analysis
@@ -909,6 +965,11 @@ def analyze(
                 fm = None
 
                 if result.pose_landmarks:
+                    detected_pose_frames += 1
+                    if pose_diagnostics.get("player_identity_ambiguous"):
+                        identity_rejected_frames += 1
+
+                if result.pose_landmarks and not pose_diagnostics.get("player_identity_ambiguous"):
                     lms = result.pose_landmarks[0]
 
                     fm = compute_metrics(
@@ -926,6 +987,8 @@ def analyze(
 
                     if fm is not None:
                         metrics.append(fm)
+                    else:
+                        rejected_pose_frames += 1
 
                 draw_hud(
                     frame,
@@ -984,6 +1047,20 @@ def analyze(
         metrics,
         frame_idx,
         fps,
+    )
+    pose_diagnostics.update(
+        roi=asdict(roi),
+        decoded_frame_width=width,
+        decoded_frame_height=height,
+        total_frames=frame_idx,
+        detected_pose_frames=detected_pose_frames,
+        accepted_metric_frames=len(metrics),
+        rejected_landmark_frames=rejected_pose_frames,
+        rejected_identity_frames=identity_rejected_frames,
+        missing_pose_frames=frame_idx - detected_pose_frames,
+        metric_coverage=summary.pose_coverage,
+        landmark_confidence_threshold=.35,
+        whole_clip_coverage_threshold=.60,
     )
 
     # ---------------------------------------------------------
@@ -1070,6 +1147,7 @@ def analyze(
         ball_summary,
         goal_outcome,
         rep_id=1,
+        training_intention=training_intention,
     )
 
     situated_state.strike_window = build_strike_window(
@@ -1118,6 +1196,21 @@ def analyze(
             text for text in (coaching_report.confidence_note, measurement_note)
             if text
         )
+    if summary.pose_coverage < .60:
+        coverage_note = (
+            f"Pose measurements passed the current checks in {len(metrics)} of "
+            f"{frame_idx} frames ({summary.pose_coverage:.0%}). "
+        )
+        if pose_diagnostics.get("player_identity_ambiguous"):
+            coverage_note += "Multiple people made automatic player selection uncertain."
+        else:
+            coverage_note += (
+                "For the next recording, keep your whole body, including both feet, "
+                "inside the frame throughout the approach and follow-through."
+            )
+        coaching_report.confidence_note = " ".join(
+            text for text in (coaching_report.confidence_note, coverage_note) if text
+        )
 
     print(
         "Coaching synthesis: "
@@ -1137,6 +1230,7 @@ def analyze(
     # ---------------------------------------------------------
 
     analysis_payload = asdict(summary)
+    analysis_payload["pose_tracking"] = pose_diagnostics
 
     analysis_payload["ball_tracking"] = {
         **ball_summary.to_dict(),
@@ -1156,6 +1250,8 @@ def analyze(
     analysis_payload["situated_state"] = (
         situated_state.to_dict()
     )
+    analysis_payload["training_intention"] = situated_state.training_intention
+    analysis_payload["intention_feedback"] = situated_state.intention_feedback
 
     analysis_payload["jev_judgements"] = (
         jev_result.to_dict()
