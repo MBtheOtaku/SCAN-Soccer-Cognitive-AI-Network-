@@ -294,6 +294,7 @@ async def analyze_video(
             use_legacy_goal_calibration=False,
             goal_reference_path=reference_path,
             training_intention=intention,
+            artifact_max_dimension=1280,
         )
 
     except Exception as exc:
@@ -351,6 +352,7 @@ async def analyze_video(
         "goal_setup": analysis_data.get("goal_setup"),
         "training_intention": analysis_data.get("training_intention", intention),
         "intention_feedback": analysis_data.get("intention_feedback"),
+        "processing": analysis_data.get("processing"),
 
         "summary": asdict(summary),
 

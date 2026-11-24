@@ -15,6 +15,7 @@ import csv
 import importlib
 import json
 import math
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -780,8 +781,18 @@ def analyze(
     use_legacy_goal_calibration: bool = True,
     goal_reference_path: Optional[Path] = None,
     training_intention: Optional[dict] = None,
+    artifact_max_dimension: Optional[int] = None,
 ) -> ShotSummary:
-
+    from src.backend.analysis_artifacts import (
+        preview_dimensions, detections_for_preview, encode_browser_video,
+    )
+    analysis_started = stage_started = time.perf_counter()
+    stage_timings = {}
+    def mark_stage(name):
+        nonlocal stage_started
+        now = time.perf_counter()
+        stage_timings[name] = round(now - stage_started, 4)
+        stage_started = now
     training_intention = parse_training_intention(training_intention)
     cap = cv2.VideoCapture(str(video))
 
@@ -791,6 +802,11 @@ def analyze(
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    try:
+        render_dimensions = preview_dimensions(width, height, artifact_max_dimension)
+    except ValueError:
+        cap.release()
+        raise
 
     from src.backend.goal_motion import GoalMotionTracker
     goal_tracker = None
@@ -877,11 +893,12 @@ def analyze(
         f"{output.stem}_temp.mp4"
     )
 
+    mark_stage("setup_and_player_calibration")
     writer = cv2.VideoWriter(
         str(temp_output),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
-        (width, height),
+        render_dimensions,
     )
 
     if not writer.isOpened():
@@ -1001,38 +1018,22 @@ def analyze(
                 elif goal_calibration is not None:
                     cv2.putText(frame, "GOAL TRACKING UNCERTAIN", (20, height - 25), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 180, 255), 2)
 
-                writer.write(frame)
+                render_frame = (frame if render_dimensions == (width, height) else
+                                cv2.resize(frame, render_dimensions, interpolation=cv2.INTER_AREA))
+                writer.write(render_frame)
 
                 frame_idx += 1
 
     finally:
         cap.release()
         writer.release()
+    mark_stage("pose_and_preview_render")
 
     # ---------------------------------------------------------
-    # Convert OpenCV output to browser-compatible H.264
+    # Defer browser encoding until after the optional trail is rendered
     # ---------------------------------------------------------
 
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(temp_output),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-an",
-            str(output),
-        ],
-        check=True,
-    )
-
-    # Remove temporary mp4v file after conversion.
-    temp_output.unlink(missing_ok=True)
+    # Encode once after the optional trail overlay, using this temporary input.
 
     # ---------------------------------------------------------
     # Save analysis artifacts
@@ -1075,6 +1076,7 @@ def analyze(
     )
 
     ball_summary = ball_result.summary
+    mark_stage("pose_summary_and_ball_tracking")
 
     # ---------------------------------------------------------
     # Goal analysis
@@ -1179,6 +1181,7 @@ def analyze(
         jev_result=jev_result,
         shot_summary=summary,
     )
+    mark_stage("goal_state_judgements_and_report")
 
     coaching_report, coaching_synthesis = (
         refine_coaching_report_with_llm(
@@ -1187,6 +1190,7 @@ def analyze(
             deterministic_report=deterministic_coaching_report,
         )
     )
+    mark_stage("coaching_synthesis")
     
     # Add an exact measurement note after synthesis so it survives both
     # external-service failures and language rewriting. Keep it out of speech.
@@ -1276,15 +1280,26 @@ def analyze(
     # Render observed post-strike ball trajectory
     # ---------------------------------------------------------
 
-    draw_ball_trail(
-        video_path=output,
-        detections=(
-            ball_result.detections
-        ),
-        strike_frame=(
-            summary.probable_strike_frame
-        ),
-    )
+    if (summary.probable_strike_frame is not None and any(
+            d.frame_idx >= summary.probable_strike_frame for d in ball_result.detections)):
+        draw_ball_trail(
+            video_path=temp_output,
+            detections=detections_for_preview(ball_result.detections, (width, height), render_dimensions),
+            strike_frame=summary.probable_strike_frame,
+            destination=output,
+        )
+    else:
+        encode_browser_video(temp_output, output)
+    temp_output.unlink(missing_ok=True)
+    mark_stage("report_serialization_and_final_video")
+    analysis_payload["processing"] = {
+        "timings_s": stage_timings,
+        "total_s": round(time.perf_counter() - analysis_started, 4),
+        "perception_dimensions": [width, height],
+        "annotated_video_dimensions": list(render_dimensions),
+        "original_video_modified": False,
+    }
+    json_path.write_text(json.dumps(analysis_payload, indent=2), encoding="utf-8")
 
     return summary
 

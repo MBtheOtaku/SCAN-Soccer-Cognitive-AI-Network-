@@ -62,11 +62,16 @@ recording resolution or the lens field of view. Record/Stop sits directly
 below the preview. Optional grid lines and corner guides are display aids;
 they are not detector boxes and are not burned into the saved clip.
 
-Zoom out/in and Reset adjust the native camera's normalized zoom range.
-The percentage is not an optical magnification such as 2x. On iOS, Standard
-and Ultra wide lens choices appear only when the camera reports those physical
-lenses. Other devices retain the default camera and zoom controls. Zoom and
-lens changes are blocked during countdown, recording and saving.
+One native slider controls zoom: left fits more of the pitch, right zooms in.
+On iOS, the recording screen starts on Ultra wide at minimum zoom when that physical
+lens is reported. Record waits for the new lens preview to be ready. The initial
+selection happens once so later readiness events do not reset the user's zoom.
+Other devices keep their default camera at minimum zoom. A cubic slider curve gives
+more control near the wide end; zoom stays on the selected lens without switching
+to a tighter physical lens during a drag. This zoom may digitally crop the image.
+Slider position is not an optical magnification such as 2x. Zoom and lens changes
+are blocked during countdown, recording and saving.
+The slider package is included in Expo Go; no custom native build is required.
 
 Keep the whole body and both feet visible through the approach and follow-through.
 A wider lens captures more of the pitch but makes the ball smaller; use only

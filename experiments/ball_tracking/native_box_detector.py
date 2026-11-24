@@ -16,9 +16,27 @@ def box_iou(a, b):
     return intersection / max(area_a + area_b - intersection, 1e-9)
 
 
-def merge_boxes(proposals, threshold=NMS_IOU):
+def merge_boxes(proposals, threshold=NMS_IOU, *, containment_threshold=None):
     if not math.isfinite(threshold) or not 0 < threshold < 1:
         raise ValueError("Expected an IoU threshold between zero and one")
+    if containment_threshold is not None and (not math.isfinite(containment_threshold)
+                                             or not 0 < containment_threshold <= 1):
+        raise ValueError("Expected a containment threshold in (0,1]")
+
+    def duplicate(a, b):
+        if box_iou(a, b) >= threshold:
+            return True
+        if containment_threshold is None:
+            return False
+        aw, ah, bw, bh = a[2]-a[0], a[3]-a[1], b[2]-b[0], b[3]-b[1]
+        intersection = max(0, min(a[2],b[2])-max(a[0],b[0])) * max(0, min(a[3],b[3])-max(a[1],b[1]))
+        areas = (aw*ah, bw*bh)
+        centres = ((a[0]+aw/2, a[1]+ah/2), (b[0]+bw/2, b[1]+bh/2))
+        # Suppress a centred nested box only. Mere centre proximity cannot
+        # merge separate balls, and a tiny box inside a goal-sized box stays.
+        return (min(areas)/max(areas) >= .25
+                and intersection/min(areas) >= containment_threshold
+                and math.dist(*centres) <= .25 * min(aw,ah,bw,bh))
     retained = []
     for proposal in sorted(proposals, key=lambda p: -p["confidence"]):
         box = proposal["bbox_native_xyxy"]
@@ -27,7 +45,7 @@ def merge_boxes(proposals, threshold=NMS_IOU):
                 or not math.isfinite(proposal["confidence"])
                 or not 0 < proposal["confidence"] <= 1):
             raise ValueError("Invalid native detection box")
-        if all(box_iou(box, other["bbox_native_xyxy"]) < threshold for other in retained):
+        if all(not duplicate(box, other["bbox_native_xyxy"]) for other in retained):
             retained.append(proposal)
     return retained
 

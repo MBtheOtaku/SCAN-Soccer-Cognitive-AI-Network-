@@ -72,6 +72,7 @@ def test_unlabelled_run_decodes_every_frame_preserves_missing_and_reports_early_
     assert result["split"] == ("unseen_session_unlabelled" if association == "legacy"
                                else "inspected_session_unlabelled")
     assert result["association_method"] == association
+    assert result["trajectory_native_support"] is False
     assert ("Inspected development" in result["limitation"]) is (association != "legacy")
     assert ("unseen-session run" in result["limitation"]) is (association == "legacy")
     assert len(result["frame_files"]) == 3
@@ -100,3 +101,10 @@ def test_unlabelled_run_never_overwrites_a_previous_report(tmp_path):
         runner.run_video({"source": str(source), "seed": [10, 10]}, object(),
                          weights, output, threads=4)
     assert (output / "report.json").read_text() == "original result"
+
+
+@pytest.mark.parametrize('enabled,native', [(True,False), (1,True), ('yes',True)])
+def test_trajectory_support_requires_explicit_boolean_and_native_fallback(enabled,native,tmp_path):
+    with pytest.raises(ValueError, match='Trajectory native support'):
+        runner.run_video({},object(),tmp_path/'weights',tmp_path/'output',threads=4,
+                         trajectory_native_support=enabled,native_detail_fallback=native)

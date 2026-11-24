@@ -26,6 +26,7 @@ ASSOCIATION_FILES = {
     "temporal": "temporal_identity.py",
     "recovery": "recovery_identity.py",
     "motion-recovery": "motion_recovery_identity.py",
+    "drift-recovery": "drift_recovery_identity.py",
 }
 
 
@@ -35,10 +36,12 @@ class TrackingCancelledError(RuntimeError):
 
 def association_hashes(method: str) -> dict:
     hashes = {"association": file_sha256(Path(__file__).with_name(ASSOCIATION_FILES[method]))}
-    if method in ("recovery", "motion-recovery"):
+    if method in ("recovery", "motion-recovery", "drift-recovery"):
         hashes["base_association"] = file_sha256(Path(__file__).with_name("temporal_identity.py"))
-    if method == "motion-recovery":
+    if method in ("motion-recovery", "drift-recovery"):
         hashes["recovery_association"] = file_sha256(Path(__file__).with_name("recovery_identity.py"))
+    if method == "drift-recovery":
+        hashes["motion_association"] = file_sha256(Path(__file__).with_name("motion_recovery_identity.py"))
     return hashes
 
 
@@ -80,7 +83,9 @@ def prepare_frame(image, processing_short_edge: int | None = None):
 def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
               progress_every: int = 15, association: str = "legacy",
               processing_short_edge: int | None = None,
-              native_detail_fallback: bool = False, *, save_frames: bool = True,
+              native_detail_fallback: bool = False, *, merge_nested_native: bool = False,
+              trajectory_native_support: bool = False,
+              save_frames: bool = True,
               progress_callback=None, cancel_check=None,
               maximum_frames: int | None = None,
               maximum_runtime_s: float | None = None,
@@ -90,6 +95,10 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
 
     if association not in ASSOCIATION_FILES:
         raise ValueError("Choose legacy, temporal, recovery or motion-recovery association")
+    if type(merge_nested_native) is not bool or (merge_nested_native and not native_detail_fallback):
+        raise ValueError("Nested native merging requires native detail fallback")
+    if type(trajectory_native_support) is not bool or (trajectory_native_support and not native_detail_fallback):
+        raise ValueError("Trajectory native support requires native detail fallback")
     if type(save_frames) is not bool or type(progress_every) is not int or progress_every < 1:
         raise ValueError("Expected a boolean save_frames and positive progress interval")
     for limit in (maximum_frames, maximum_source_pixels, maximum_source_dimension):
@@ -99,7 +108,7 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
             or not math.isfinite(maximum_runtime_s) or maximum_runtime_s <= 0):
         raise ValueError("Optional runtime limit must be finite and positive")
     if native_detail_fallback:
-        if processing_short_edge != 720 or association != "motion-recovery":
+        if processing_short_edge != 720 or association not in ("motion-recovery", "drift-recovery"):
             raise ValueError("Native fallback requires motion-recovery and 720-short-edge processing")
         from experiments.ball_tracking.native_detail_fallback import augment_native_detail, SETTINGS as NATIVE_SETTINGS
         from experiments.ball_tracking.native_evidence_verifier import NativeEvidenceVerifier
@@ -107,8 +116,10 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
         from experiments.ball_tracking.temporal_identity import TemporalIdentity, estimate_camera_translation
         if association == "recovery":
             from experiments.ball_tracking.recovery_identity import RecoveryIdentity
-        elif association == "motion-recovery":
+        elif association in ("motion-recovery", "drift-recovery"):
             from experiments.ball_tracking.motion_recovery_identity import MotionRecoveryIdentity
+    if association == "drift-recovery":
+        from experiments.ball_tracking.drift_recovery_identity import DriftRecoveryIdentity
     case = validate_case(case)
     source, seed, start = case["source"], case["seed"], case["start_frame"]
     source_seed = seed
@@ -171,12 +182,14 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
                 seed = tuple(source_seed[i] * frame_transform[("scale_x", "scale_y")[i]]
                              for i in range(2))
                 if native_detail_fallback:
-                    native_verifier = NativeEvidenceVerifier(source_image, image, source_seed)
+                    native_verifier = NativeEvidenceVerifier(
+                        source_image, image, source_seed, trajectory_support=trajectory_native_support)
                 last, velocity = seed, (0.0, 0.0)
                 if not (0 <= seed[0] < width and 0 <= seed[1] < height):
                     raise ValueError(f"Seed {seed} is outside decoded image {width}x{height}")
                 if association != "legacy":
-                    tracker_class = (MotionRecoveryIdentity if association == "motion-recovery" else
+                    tracker_class = (DriftRecoveryIdentity if association == "drift-recovery" else
+                                     MotionRecoveryIdentity if association == "motion-recovery" else
                                      RecoveryIdentity if association == "recovery" else TemporalIdentity)
                     tracker = tracker_class(seed, scale=min(width, height) / 720.0)
             elif image.shape[:2] != (height, width):
@@ -192,7 +205,11 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
             native_verification = None
             if native_detail_fallback:
                 proposals, native_evidence = augment_native_detail(
-                    model, source_image, frame_transform, predicted, proposals)
+                    model, source_image, frame_transform, predicted, proposals,
+                    merge_nested_native=merge_nested_native,
+                    recovery_query=(tuple(tracker.last_observed[i] + shift[i] for i in range(2))
+                                    if association == "drift-recovery" and 0 < tracker.misses < tracker.settings.maximum_prediction_gap
+                                    and camera_motion.get("status") == "estimated_translation_only" else None))
                 proposals, native_verification = native_verifier.filter(
                     number, source_image, image, proposals, accepted_frames=accepted_frames)
             row = {"clip": case["clip"], "frame": number,
@@ -240,6 +257,8 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
               "source_seed": source_seed, "frame_transform": frame_transform,
               "processing_short_edge": processing_short_edge,
               "native_detail_fallback": native_detail_fallback,
+              "merge_nested_native": merge_nested_native,
+              "trajectory_native_support": trajectory_native_support,
               "native_detail_settings": NATIVE_SETTINGS if native_detail_fallback else None,
               "native_verification_settings": native_verifier.configuration() if native_verifier is not None else None,
               "native_detail_implementation_sha256": ({
@@ -247,6 +266,7 @@ def run_video(case: dict, model, weights: Path, destination: Path, threads: int,
                   "native_detector": file_sha256(Path(__file__).with_name("native_box_detector.py")),
                   "native_geometry_helper": file_sha256(Path(__file__).with_name("probe_native_detail.py")),
                   "verification": file_sha256(Path(__file__).with_name("native_evidence_verifier.py")),
+                  "trajectory_evidence": file_sha256(Path(__file__).with_name("trajectory_evidence.py")),
               } if native_detail_fallback else None),
               "reported_video_frames": reported_frames, "decoded_video_frames": number,
               "reached_reported_end": number >= reported_frames,
@@ -290,12 +310,20 @@ def main() -> None:
                         help="Temporal, recovery and motion-recovery are inspected-session offline identity experiments")
     parser.add_argument("--native-detail-fallback", action="store_true",
                         help="Offline native crops with background/temporal checks; requires motion-recovery and processing short edge 720")
+    parser.add_argument("--merge-nested-native", action="store_true",
+                        help="Offline centred nested-box suppression; requires native detail fallback")
+    parser.add_argument("--trajectory-native-support", action="store_true",
+                        help="Offline bounded velocity support across one detector gap; requires native fallback")
     args = parser.parse_args()
     if args.threads < 1:
         parser.error("--threads must be positive")
+    if args.merge_nested_native and not args.native_detail_fallback:
+        parser.error("--merge-nested-native requires --native-detail-fallback")
+    if args.trajectory_native_support and not args.native_detail_fallback:
+        parser.error("--trajectory-native-support requires --native-detail-fallback")
     if args.processing_short_edge is not None and args.processing_short_edge < 1:
         parser.error("--processing-short-edge must be positive")
-    if args.native_detail_fallback and (args.processing_short_edge != 720 or args.association != "motion-recovery"):
+    if args.native_detail_fallback and (args.processing_short_edge != 720 or args.association not in ("motion-recovery", "drift-recovery")):
         parser.error("--native-detail-fallback requires --processing-short-edge 720 --association motion-recovery")
     if args.video and args.seed is None:
         parser.error("--video requires --seed")
@@ -323,6 +351,8 @@ def main() -> None:
               "settings": SETTINGS, "cpu_threads": args.threads,
               "processing_short_edge": args.processing_short_edge,
               "native_detail_fallback": args.native_detail_fallback,
+              "merge_nested_native": args.merge_nested_native,
+              "trajectory_native_support": args.trajectory_native_support,
               "input_seed_coordinates": "decoded_source_pixels_before_optional_downsample",
               "association_method": args.association,
               "cases": [{"source": str(case["source"]), "source_sha256": file_sha256(case["source"]),
@@ -340,13 +370,16 @@ def main() -> None:
             "fallback": file_sha256(Path(__file__).with_name("native_detail_fallback.py")),
             "native_detector": file_sha256(Path(__file__).with_name("native_box_detector.py")),
             "native_geometry_helper": file_sha256(Path(__file__).with_name("probe_native_detail.py")),
-            "verification": file_sha256(Path(__file__).with_name("native_evidence_verifier.py"))}
+            "verification": file_sha256(Path(__file__).with_name("native_evidence_verifier.py")),
+            "trajectory_evidence": file_sha256(Path(__file__).with_name("trajectory_evidence.py"))}
     freeze_path.write_text(json.dumps(freeze, indent=2) + "\n", encoding="utf-8")
     for case in cases:
         checked = validate_case(case)
         run_video(case, model, args.weights, args.output / checked["clip"], args.threads,
                   association=args.association, processing_short_edge=args.processing_short_edge,
-                  native_detail_fallback=args.native_detail_fallback)
+                  native_detail_fallback=args.native_detail_fallback,
+                  merge_nested_native=args.merge_nested_native,
+                  trajectory_native_support=args.trajectory_native_support)
 
 
 if __name__ == "__main__":

@@ -92,6 +92,20 @@ def test_720_source_is_not_upscaled_or_reinferred():
     assert result == [] and info["status"] == "not_requested_no_additional_source_detail"
 
 
+def test_opt_in_recovery_search_uses_anchor_without_bypassing_verifier():
+    def native(*args):
+        return [{"center": [1080, 1950], "confidence": .9},
+                {"center": [1200, 1950], "confidence": .99}], 4
+
+    result, info = augment_native_detail(
+        None, image(), transform(), (300, 550), [], infer=native,
+        recovery_query=(300, 650))
+    assert [p["center"] for p in result] == [[360, 650]]
+    assert result[0]["proposal_source"] == "native_detail"
+    assert "identity_verified" not in result[0]
+    assert info["recovery_query"] == [300, 650]
+
+
 @pytest.mark.parametrize("query", [(math.nan, 1), (1, math.inf), (1,)])
 def test_invalid_query_rejected(query):
     with pytest.raises(ValueError):

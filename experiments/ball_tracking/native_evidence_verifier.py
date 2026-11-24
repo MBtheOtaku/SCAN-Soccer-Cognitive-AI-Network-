@@ -35,7 +35,11 @@ def project(point, matrix):
 
 
 class NativeEvidenceVerifier:
-    def __init__(self, initial_source, initial_working, source_seed):
+    def __init__(self, initial_source, initial_working, source_seed, *, trajectory_support=False):
+        if type(trajectory_support) is not bool:
+            raise ValueError("Expected boolean trajectory support")
+        from experiments.ball_tracking.trajectory_evidence import TrajectoryEvidence
+        self.trajectory = TrajectoryEvidence() if trajectory_support else None
         self.source = initial_source.copy()
         self.height, self.width = initial_working.shape[:2]
         self.sx = initial_source.shape[1] / self.width
@@ -54,7 +58,8 @@ class NativeEvidenceVerifier:
     def configuration(self):
         return {**SETTINGS,
                 "reference": "first_processed_source_image_only",
-                "baseline_proposals": "preserved_without_filtering"}
+                "baseline_proposals": "preserved_without_filtering",
+                "trajectory_support": self.trajectory.configuration() if self.trajectory else None}
 
     def align(self, current):
         if current.shape[:2] != (self.height, self.width):
@@ -138,6 +143,8 @@ class NativeEvidenceVerifier:
 
     def reset_support(self):
         self.hypotheses = []
+        if self.trajectory is not None:
+            self.trajectory.reset()
 
     def filter(self, frame, source, working, proposals, *, accepted_frames=()):
         if self.last_frame is not None and frame != self.last_frame + 1:
@@ -153,7 +160,11 @@ class NativeEvidenceVerifier:
                 "continuity_support_frames": list(accepted_frames)[-2:] if warm else [],
                 "hypotheses": []}
         if not extra:
-            self.reset_support()
+            self.hypotheses = []
+            if self.trajectory is None:
+                self.reset_support()
+            else:
+                self.trajectory.update(frame, [])
             return list(proposals), info
         matrix, registration = self.align(working)
         info.update(status="extra_native_evidence_checked", background_registration=registration)
@@ -165,8 +176,22 @@ class NativeEvidenceVerifier:
                 usable.append((candidate, result["reference_processing_center"]))
         if not usable or len(usable) > SETTINGS["maximum_hypotheses"]:
             self.reset_support()
+            if self.trajectory is not None:
+                self.trajectory.update(frame, [], available=False)
             info["status"] = "no_bounded_extra_native_evidence"
             return baseline, info
+        trajectory_forwarded = []
+        if self.trajectory is not None:
+            support = self.trajectory.update(frame, [[float(v) for v in point] for _, point in usable])
+            info["trajectory_hypotheses"] = []
+            for (candidate, _), evidence in zip(usable, support, strict=True):
+                supported = evidence["supported"]
+                info["trajectory_hypotheses"].append({"center": candidate["center"],
+                                            "native_observation_frames": evidence["frames"],
+                                            "forwarded_to_association": supported,
+                                            "trajectory_evidence": evidence})
+                if supported:
+                    trajectory_forwarded.append(candidate)
         previous = [h for h in self.hypotheses if h["last_frame"] == frame - 1]
         points = [p for _, p in usable]
         margin = SETTINGS["hypothesis_match_ambiguity_px"]
@@ -192,6 +217,13 @@ class NativeEvidenceVerifier:
         self.hypotheses = hypotheses
         if len(hypotheses) == 1:
             info["support_frames"] = list(accepted_frames)[-2:] + [frame] if warm else hypotheses[0]["frames"]
+        # Preserve the established verifier. The motion model is additional
+        # evidence only; it cannot reject a supported existing hypothesis.
+        trajectory_added = [candidate for candidate in trajectory_forwarded
+                            if all(candidate is not old for old in forwarded)]
+        forwarded.extend(trajectory_added)
+        if self.trajectory is not None:
+            info["trajectory_added_proposals"] = len(trajectory_added)
         info["status"] = ("supported_extra_evidence_not_verified_identity" if forwarded
                           else "awaiting_repeated_extra_evidence")
         # Several plausible objects stay separate. The association layer owns

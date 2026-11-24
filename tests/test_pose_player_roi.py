@@ -109,14 +109,18 @@ def fake_detector_runtime(monkeypatch, tmp_path, frames, fail_prediction=False):
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _: Detector()))
     class Capture:
         released = False
+        index = 0
         def isOpened(self):
             return True
         def get(self, _):
             return len(frames)
         def set(self, _, value):
-            self.index = value
+            raise AssertionError("Calibration must decode requested frames sequentially")
         def read(self):
+            if self.index >= len(frames):
+                return False, None
             frame = frames[self.index]
+            self.index += 1
             return frame is not None, frame
         def release(self):
             self.released = True

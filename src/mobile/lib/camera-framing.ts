@@ -1,6 +1,10 @@
+function boundedCameraZoom(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
 // Expo's zoom is normalized to the device range, not an optical magnification.
 export function clampCameraZoom(value: number): number {
-  return Number.isFinite(value) ? Math.max(0, Math.min(1, Math.round(value * 1000) / 1000)) : 0;
+  return Math.round(boundedCameraZoom(value) * 1000) / 1000;
 }
 
 export function cameraPreviewSize(windowWidth: number, windowHeight: number, expanded: boolean) {
@@ -13,6 +17,20 @@ export function cameraPreviewSize(windowWidth: number, windowHeight: number, exp
 
 export const standardLens = 'AVCaptureDeviceTypeBuiltInWideAngleCamera';
 export const ultraWideLens = 'AVCaptureDeviceTypeBuiltInUltraWideCamera';
+
+// Spend more of the bar near the wide end instead of rushing into the native
+// camera's maximum zoom. This is a control curve, not optical magnification.
+export function cameraZoomTarget(position: number) {
+  return boundedCameraZoom(position) ** 3;
+}
+
+export function cameraZoomPosition(zoom: number) {
+  return Math.cbrt(boundedCameraZoom(zoom));
+}
+
+export function widestFramingLens(lenses: readonly { deviceType: string }[]) {
+  return lenses.some(lens => lens.deviceType === ultraWideLens) ? ultraWideLens : undefined;
+}
 
 export function framingLenses(lenses: readonly { deviceType: string }[]) {
   return [

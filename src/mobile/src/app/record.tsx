@@ -3,6 +3,7 @@ import { Alert, AppState, BackHandler, Linking, Platform, Pressable, ScrollView,
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions, useMicrophonePermissions, type LensInfo } from 'expo-camera';
+import Slider from '@react-native-community/slider';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Action, BallProgress } from '../../components/controls';
 import { useReps } from '../../lib/rep-store';
@@ -11,7 +12,7 @@ import { startCountdown } from '../../lib/countdown';
 import { TrainingIntentionFields } from '../../components/training-intention';
 import { normalizeIntention, type TrainingIntention } from '../../lib/training-intention';
 import { captureAudio, type CaptureAudioMode } from '../../lib/capture-audio';
-import { cameraPreviewSize, clampCameraZoom, framingLenses } from '../../lib/camera-framing';
+import { cameraPreviewSize, cameraZoomPosition, cameraZoomTarget, ultraWideLens, widestFramingLens } from '../../lib/camera-framing';
 
 type Phase = 'ready' | 'countdown' | 'recording' | 'saving' | 'saved';
 const captureProfiles = {
@@ -37,8 +38,10 @@ export default function Record() {
   const countdown = useRef<ReturnType<typeof startCountdown> | null>(null);
   const active = useRef(false);
   const cameraGeneration = useRef(0);
+  const initialLensChosen = useRef(false);
   const microphoneRequest = useRef(false);
   const [generation, setGeneration] = useState(0);
+  const [initialLensApplied, setInitialLensApplied] = useState(false);
   const [quality, setQuality] = useState<CaptureQuality>('1080p');
   const [stabilization, setStabilization] = useState<'auto' | 'off'>('auto');
   const [showCameraSettings, setShowCameraSettings] = useState(false);
@@ -63,23 +66,31 @@ export default function Record() {
   const store = useReps();
   const audio = captureAudio(audioMode, microphone);
   const cameraKey = `${generation}-${audio.mute ? 'muted' : 'sound'}`;
-  const cameraReady = readyConfiguration === cameraKey;
+  const widestLens = Platform.OS === 'ios' ? widestFramingLens(availableLenses) : undefined;
+  const initialLensPending = !!widestLens && !initialLensApplied;
+  const cameraReady = readyConfiguration === cameraKey && !initialLensPending;
   const busy = phase === 'countdown' || phase === 'recording' || phase === 'saving' || store.saving;
   const previewSize = cameraPreviewSize(window.width, window.height, expandedPreview);
-  const lensOptions = framingLenses(availableLenses);
   const framingDisabled = busy || !cameraReady || !foreground || !focused;
+  const usingUltraWide = selectedLens === ultraWideLens && !!widestLens;
+  const zoomPosition = cameraZoomPosition(zoom);
 
-  function changeZoom(value: number) {
+  function slideZoom(position: number) {
     if (lock.current || framingDisabled) return;
-    setZoom(clampCameraZoom(value));
+    setZoom(cameraZoomTarget(position));
   }
 
-  function changeLens(value: string) {
-    if (lock.current || framingDisabled || !lensOptions.some(lens => lens.id === value) || value === (selectedLens ?? '')) return;
+  useEffect(() => {
+    if (initialLensChosen.current || !widestLens || busy || lock.current || !foreground || !focused || readyConfiguration !== cameraKey) return;
+    // Select only a reported physical lens, once per recording screen. Wait for
+    // its fresh native preview before enabling Record. Later readiness events
+    // must not reset the user's framing or zoom.
+    initialLensChosen.current = true;
+    setInitialLensApplied(true);
     cameraGeneration.current += 1;
     setGeneration(cameraGeneration.current); setReadyConfiguration(null);
-    setSelectedLens(value || undefined); setZoom(0); setError(null); setPhase('ready');
-  }
+    setSelectedLens(widestLens); setZoom(0); setError(null); setPhase('ready');
+  }, [widestLens, busy, foreground, focused, readyConfiguration, cameraKey]);
 
   function configureCamera(nextQuality: CaptureQuality, nextStabilization: 'auto' | 'off') {
     if (lock.current || busy || (nextQuality === quality && nextStabilization === stabilization)) return;
@@ -238,26 +249,19 @@ export default function Record() {
             <Text style={s.framingText}>Guides {showGuides ? 'on' : 'off'}</Text>
           </Pressable>
         </View>
-        <View style={ui.row}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Zoom out" disabled={framingDisabled || zoom === 0}
-            accessibilityState={{ disabled: framingDisabled || zoom === 0 }} onPress={() => changeZoom(zoom - .05)}
-            style={[s.zoomButton, (framingDisabled || zoom === 0) && s.dimmed]}><Text style={ui.heading}>−</Text></Pressable>
-          <Text style={[ui.body, { flex: 1, textAlign: 'center' }]}>Zoom {Math.round(zoom * 100)}%</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="Zoom in" disabled={framingDisabled || zoom === 1}
-            accessibilityState={{ disabled: framingDisabled || zoom === 1 }} onPress={() => changeZoom(zoom + .05)}
-            style={[s.zoomButton, (framingDisabled || zoom === 1) && s.dimmed]}><Text style={ui.heading}>+</Text></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Reset zoom" disabled={framingDisabled || zoom === 0}
-            accessibilityState={{ disabled: framingDisabled || zoom === 0 }} onPress={() => changeZoom(0)}
-            style={[s.zoomButton, (framingDisabled || zoom === 0) && s.dimmed]}><Text style={s.framingText}>Reset</Text></Pressable>
+        <View style={[ui.row, { justifyContent: 'space-between' }]}>
+          <Text style={s.framingText}>Zoom</Text>
+          <Text style={ui.small}>{zoom === 0 ? usingUltraWide ? 'Ultra wide · widest view' : 'Widest view' : 'Zoomed in'}</Text>
         </View>
-        {Platform.OS === 'ios' && lensOptions.length > 1 && <View style={ui.row}>{lensOptions.map(lens => <Pressable key={lens.id}
-          accessibilityRole="button" accessibilityLabel={`Camera lens: ${lens.label}`}
-          accessibilityState={{ selected: (selectedLens ?? '') === lens.id, disabled: framingDisabled }} disabled={framingDisabled}
-          onPress={() => changeLens(lens.id)} style={[s.choice, (selectedLens ?? '') === lens.id && s.selected, framingDisabled && s.dimmed]}>
-          <Text style={[s.framingText, (selectedLens ?? '') === lens.id && { color: colors.dark }]}>{lens.label}</Text>
-        </Pressable>)}</View>}
-        <Text style={ui.small}>Keep your whole body, both feet, the ball and the goal visible. Leave room for the approach and follow-through. Set zoom before starting; it locks during the rep.</Text>
-        <Text style={ui.small}>Guides only help you frame the shot. They do not crop the saved video or mark detected players. A larger preview changes the display size; use a wider lens or move the phone back to capture more of the pitch.</Text>
+        <Slider style={s.zoomSlider} minimumValue={0} maximumValue={1} value={zoomPosition}
+          disabled={framingDisabled} tapToSeek minimumTrackTintColor={colors.green} maximumTrackTintColor={colors.line}
+          thumbTintColor={colors.green} accessibilityLabel="Camera zoom"
+          accessibilityHint="Slide fully left for the widest view, right to zoom in."
+          onValueChange={slideZoom} onSlidingComplete={slideZoom} />
+        <View style={[ui.row, { justifyContent: 'space-between' }]}>
+          <Text style={ui.small}>Widest</Text><Text style={ui.small}>Zoom in</Text>
+        </View>
+        <Text style={ui.small}>Keep your whole body, both feet, ball and goal visible. Set zoom before the rep; it locks while recording.</Text>
       </View>
       <View style={ui.card}>
         <TrainingIntentionFields value={intention} onChange={setIntention} disabled={busy} />
@@ -349,7 +353,7 @@ const s = StyleSheet.create({
   cameraViewport: { overflow: 'hidden', borderRadius: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.line },
   framingButton: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.raised, borderRadius: 10 },
   framingText: { color: colors.text, fontSize: 13, fontWeight: '700' },
-  zoomButton: { minWidth: 44, minHeight: 44, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.raised, borderRadius: 10 },
+  zoomSlider: { width: '100%', height: 44 },
   dimmed: { opacity: .4 },
   guideVertical: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: '#FFFFFF40' },
   guideHorizontal: { position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: '#FFFFFF40' },

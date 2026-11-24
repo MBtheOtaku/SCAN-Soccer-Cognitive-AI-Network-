@@ -2531,6 +2531,7 @@ def draw_ball_trail(
     video_path: Path,
     detections: list[BallDetection],
     strike_frame: Optional[int],
+    *, destination: Optional[Path] = None,
 ) -> None:
 
     if strike_frame is None:
@@ -2984,29 +2985,8 @@ def draw_ball_trail(
         cap.release()
         writer.release()
 
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-
-            "-i",
-            str(temp_output),
-
-            "-c:v",
-            "libx264",
-
-            "-pix_fmt",
-            "yuv420p",
-
-            "-movflags",
-            "+faststart",
-
-            "-an",
-
-            str(video_path),
-        ],
-        check=True,
-    )
+    from src.backend.analysis_artifacts import encode_browser_video
+    encode_browser_video(temp_output, destination if destination is not None else video_path)
 
     temp_output.unlink(
         missing_ok=True

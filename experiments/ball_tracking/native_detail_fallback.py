@@ -51,9 +51,14 @@ def local_region(transform, query):
             "query_center_native": [query[0] * sx, query[1] * sy]}
 
 
-def augment_native_detail(model, source_image, transform, query, baseline, *, infer=None):
+def augment_native_detail(model, source_image, transform, query, baseline, *, infer=None,
+                          recovery_query=None, merge_nested_native=False):
     """Preserve baseline proposals, adding bounded evidence before association."""
-    region = local_region(transform, query)
+    if type(merge_nested_native) is not bool:
+        raise ValueError("Expected boolean nested native merging")
+    # Recovery is explicitly opt-in; retain the original crop budget.
+    search_query = query if recovery_query is None else recovery_query
+    region = local_region(transform, search_query)
     if source_image.shape[:2] != (transform["source_height"], transform["source_width"]):
         raise ValueError("Source image dimensions disagree with frame transform")
     for proposal in baseline:
@@ -65,8 +70,9 @@ def augment_native_detail(model, source_image, transform, query, baseline, *, in
     result = list(baseline)
     info = {"status": "not_requested_local_evidence_present", "crop_count": 0,
             "query_center_processing": list(query), "native_region": region,
-            "raw_proposals": [], "admitted_proposals": [], "elapsed_s": 0.0}
-    if any(math.dist(p["center"], query) <= SETTINGS["local_evidence_radius_px"]
+            "raw_proposals": [], "admitted_proposals": [], "elapsed_s": 0.0,
+            "recovery_query": list(recovery_query) if recovery_query is not None else None}
+    if recovery_query is None and any(math.dist(p["center"], query) <= SETTINGS["local_evidence_radius_px"]
            for p in baseline):
         return result, info
     sx, sy = region["source_per_processing_xy"]
@@ -75,6 +81,12 @@ def augment_native_detail(model, source_image, transform, query, baseline, *, in
         return result, info
     started = time.perf_counter()
     proposals, count = (infer or detect_native_boxes)(model, source_image, region)
+    info["nested_merge_enabled"] = merge_nested_native
+    info["proposals_before_nested_merge"] = len(proposals)
+    if merge_nested_native:
+        from experiments.ball_tracking.native_box_detector import merge_boxes
+        proposals = merge_boxes(proposals, containment_threshold=.85)
+    info["nested_duplicates_removed"] = info["proposals_before_nested_merge"] - len(proposals)
     info.update(status="native_local_search", crop_count=count,
                 elapsed_s=time.perf_counter() - started)
     for proposal in proposals:
@@ -91,7 +103,8 @@ def augment_native_detail(model, source_image, transform, query, baseline, *, in
         info["raw_proposals"].append(candidate)
         if (not 0 <= point[0] < transform["width"]
                 or not 0 <= point[1] < transform["height"]
-                or math.dist(point, query) > SETTINGS["native_admission_radius_px"]):
+                or math.dist(point, search_query) > (SETTINGS["native_admission_radius_px"]
+                                                      if recovery_query is None else 96.0)):
             continue
         result.append(candidate)
         info["admitted_proposals"].append(candidate)

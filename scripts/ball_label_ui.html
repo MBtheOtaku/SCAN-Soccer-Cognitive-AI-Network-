@@ -4,7 +4,8 @@
 <style>
 body{font:16px system-ui;background:#09120c;color:#ecf5ed;margin:20px;max-width:1100px}
 button,input{font:inherit;margin:4px;padding:9px}button{cursor:pointer}button:focus{outline:3px solid #a8fb89}
-canvas{display:block;max-width:100%;height:auto;max-height:72vh;touch-action:none;background:#14231a;cursor:crosshair}
+canvas{display:block;max-width:none;height:auto;touch-action:none;background:#14231a;cursor:crosshair}
+#viewport{overflow:auto;max-height:72vh;max-width:100%;background:#14231a}
 #status{color:#a8fb89;min-height:28px}p{max-width:850px} .warning{color:#ffd48a}
 </style>
 <h1>SCAN · Ball labels</h1>
@@ -14,13 +15,17 @@ Use <b>Ball absent</b> only when no ball is visible anywhere in the image.</p>
 <div><button id="prev">← Previous</button><button id="next">Next →</button>
 <button id="absent">Ball absent</button><button id="uncertain">Uncertain / hidden</button><button id="clear">Clear</button></div>
 <div><button id="save">Download labels</button><label>Resume from labels JSON <input type="file" id="load" accept=".json"></label></div>
+<div>View: <button data-zoom="1">Fit</button><button data-zoom="2">2×</button><button data-zoom="4">4×</button> Scroll to inspect the enlarged image. Zoom changes the view, not your label coordinates.</div>
 <p class="warning">Download before closing. Keep the downloaded JSON; browser storage is not used.</p>
-<div id="status" role="status"></div><canvas id="canvas"></canvas>
+<div id="status" role="status"></div><div id="viewport"><canvas id="canvas"></canvas></div>
 <script>
 const manifest=__MANIFEST__;
 const canvas=document.getElementById('canvas'), ctx=canvas.getContext('2d');
 const status=document.getElementById('status'), image=new Image();
-let index=0, dirty=false, ready=false, drag=null;
+let index=0, dirty=false, ready=false, drag=null, zoom=1;
+function sizeView(){if(!ready)return;const host=document.getElementById('viewport');canvas.style.width=Math.max(1,Math.min(canvas.width,host.clientWidth)*zoom)+'px';}
+for(const button of document.querySelectorAll('[data-zoom]'))button.onclick=()=>{zoom=Number(button.dataset.zoom);sizeView();};
+window.addEventListener('resize',sizeView);
 let rows=manifest.frames.map(f=>({frame:f.frame,state:'unreviewed',box:null}));
 function draw(){
  if(!ready)return;
@@ -32,7 +37,7 @@ function draw(){
 }
 function show(){
  ready=false;drag=null;const f=manifest.frames[index];
- image.onload=()=>{canvas.width=f.width;canvas.height=f.height;ready=true;draw();};
+ image.onload=()=>{canvas.width=f.width;canvas.height=f.height;ready=true;sizeView();draw();};
  image.onerror=()=>{status.textContent='Image could not load; keep this page beside its frames folder.';};
  image.src=f.image;
 }

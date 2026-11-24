@@ -57,6 +57,7 @@ def test_clips_reuse_existing_analyser(api, suffix):
     assert calls == [(suffix, b"clip bytes", None)]
     assert result["coaching_report"]["spoken_cue"] is None
     assert result["artifacts"]["annotated_video"].startswith("/outputs/")
+    assert module.received_goal_options["artifact_max_dimension"] == 1280
     assert upload.file.closed
 
 

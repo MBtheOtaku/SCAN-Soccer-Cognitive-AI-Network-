@@ -98,6 +98,24 @@ def person_envelope(
     return PersonCrop(bounds, len(samples), len(selected), edge_frames, background_candidate_frames)
 
 
+def sample_frames_sequential(capture, indices):
+    """Decode each requested frame once, avoiding repeated GOP seeking."""
+    indices = list(indices)
+    if any(type(i) is not int or i < 0 for i in indices) or indices != sorted(set(indices)):
+        raise ValueError("Expected distinct increasing nonnegative frame indices")
+    current, exhausted = 0, False
+    for index in indices:
+        frame = None
+        while not exhausted and current <= index:
+            ok, decoded = capture.read()
+            current += 1
+            if not ok:
+                exhausted = True
+            elif current - 1 == index:
+                frame = decoded
+        yield index, frame
+
+
 def detect_person_crop(
     video_path: Path,
     weights_path: Path | None = None,
@@ -122,10 +140,9 @@ def detect_person_crop(
             raise RuntimeError("Too few video frames for player calibration.")
         observations = []
         shape = None
-        for index in np.linspace(0, count - 1, min(samples, count), dtype=int):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(index))
-            ok, frame = cap.read()
-            if not ok:
+        indices = [int(i) for i in np.linspace(0, count - 1, min(samples, count), dtype=int)]
+        for index, frame in sample_frames_sequential(cap, indices):
+            if frame is None:
                 observations.append([])
                 continue
             # Read orientation from decoded pixels, including phone rotation.
