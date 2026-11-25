@@ -1,6 +1,7 @@
 """The optional HTTP tracker uses one exact seed and never supplies coaching."""
 
 import builtins
+from copy import deepcopy
 import io
 import json
 import threading
@@ -33,6 +34,7 @@ def mock_preview(source, destination):
 def api(tmp_path, monkeypatch):
     monkeypatch.delenv("SCAN_EXPERIMENTAL_BALL_WEIGHTS", raising=False)
     monkeypatch.setattr(tracking, "_extract_preview", mock_preview)
+    monkeypatch.setattr(tracking, "_decode_frame_times", lambda _: None)
     weights = tmp_path / "data/models/scan-experimental-ball.pt"
     weights.parent.mkdir(parents=True)
     weights.write_bytes(b"frozen-local-weights")
@@ -209,6 +211,83 @@ def test_high_resolution_uses_720_working_frame_and_native_fallback(api, monkeyp
     assert service.result(item["tracking_id"])["width"] == 2160
 
 
+@pytest.mark.parametrize('option',[True,False])
+def test_recovery_request_requires_local_assets_before_starting(api,option):
+    client,service,_=api
+    item=upload(client)
+    assert item['recovery_available'] is False
+    response=client.post(f"/experimental-tracking/{item['tracking_id']}/start",
+        json={'seed':{'x':.5,'y':.5},'recover_misses':True if option else 'true'})
+    assert response.status_code==(503 if option else 400)
+    assert service.worker is None
+    assert service.status(item['tracking_id'])['status']=='ready'
+
+
+@pytest.mark.parametrize('failure',[None,'missing_model','cancelled','partial'])
+def test_optional_recovery_is_isolated_from_coaching_and_preserves_baseline_on_failure(api,monkeypatch,failure):
+    from experiments.ball_tracking import track_unlabelled_video as runner
+    from experiments.ball_tracking import detector_confirmed_recovery as recovery
+    client,service,_=api
+    def preview(source,destination):
+        destination.write_bytes(b'preview')
+        return metadata(width=2160,height=3840)
+    monkeypatch.setattr(tracking,'_extract_preview',preview)
+    monkeypatch.setattr(service,'_recovery_available',lambda state:True)
+    monkeypatch.setattr(service,'_load_model',lambda _:object())
+    def load_recovery():
+        if failure=='missing_model':
+            raise FileNotFoundError('private internal model path')
+        return object()
+    monkeypatch.setattr(service,'_load_recovery',load_recovery)
+    calls=[]
+    def run(case,model,weights,output,threads,**options):
+        assert options['association']=='drift-recovery'
+        assert options['merge_nested_native'] is options['trajectory_native_support'] is True
+        result=fake_report(case,720,1280,True)
+        result['frame_transform']={'source_width':2160,'source_height':3840}
+        calls.append(deepcopy(result))
+        return result
+    monkeypatch.setattr(runner,'run_video',run)
+    def recover(baseline,source,model,weights,provider,destination,**options):
+        assert baseline==calls[0]
+        assert options['settings'].confirm_measured_history and options['settings'].motion_guided_crop
+        assert options['settings'].maximum_runtime_s<=240
+        options['progress_callback']({'processed_windows':1,'total_windows':2})
+        if failure=='cancelled':
+            service.cancel_event.set()
+            raise runner.TrackingCancelledError('cancelled')
+        result=deepcopy(baseline)
+        result['path'][1].update(detected=True,center=[25,32],reason='detector_confirmed_learned_recovery_provisional')
+        result['learned_recovery']={'new_observation_frames':[1],
+            'errors':[{'type':'TimeoutError'}] if failure=='partial' else []}
+        return result
+    monkeypatch.setattr(recovery,'run_recovery',recover)
+    item=upload(client)
+    assert item['recovery_available'] is True
+    response=client.post(f"/experimental-tracking/{item['tracking_id']}/start",
+        json={'seed':{'x':.5,'y':.5},'recover_misses':True})
+    assert response.status_code==200
+    terminal=await_terminal(service,item['tracking_id'])
+    if failure=='cancelled':
+        assert terminal['status']=='cancelled'
+        assert not (service.jobs/item['tracking_id']/'result.json').exists()
+        return
+    assert terminal['status']=='completed'
+    result=service.result(item['tracking_id'])
+    assert result['recovery']['requested'] is True
+    assert result['processing']['total_s']>=0
+    assert result['processing']['excludes_upload'] is True
+    assert result['recovery']['status']==('unavailable' if failure=='missing_model' else 'partial' if failure=='partial' else 'completed')
+    assert result['points'][1]['recovered']==(failure!='missing_model')
+    assert result['recovery']['added_observations']==(0 if failure=='missing_model' else 1)
+    assert not {'outcome','coaching','goal','speed'}.intersection(result)
+    assert 'private internal' not in json.dumps(result)
+    assert all(p['identity_verified'] is False for p in result['points'])
+    with pytest.raises(HTTPException) as changed:
+        service.start(item['tracking_id'],{'x':.5,'y':.5},recover_misses=False)
+    assert changed.value.status_code==409
+
+
 def test_one_active_job_idempotent_start_conflicts_and_cancellation(api, monkeypatch):
     client, service, _ = api
     entered, release = threading.Event(), threading.Event()
@@ -297,18 +376,89 @@ def test_nonfinite_or_out_of_bounds_tracker_points_never_become_observations():
 
 
 class FakeCapture:
-    def __init__(self, frames, fps=30, count=None):
+    def __init__(self, frames, fps=30, count=None, times=None):
         self.frames, self.fps = frames, fps
+        self.times = times
         self.count = len(frames) if count is None else count
         self.position, self.released = 0, False
     def isOpened(self): return True
-    def get(self, key): return self.fps if key == cv2.CAP_PROP_FPS else self.count
+    def get(self, key):
+        if key == cv2.CAP_PROP_POS_MSEC:
+            return (self.times[self.position - 1] if self.times is not None else (self.position - 1) / self.fps) * 1000
+        return self.fps if key == cv2.CAP_PROP_FPS else self.count
     def read(self):
         if self.position >= len(self.frames): return False, None
         image = self.frames[self.position]
         self.position += 1
         return True, image
+    def grab(self): return self.read()[0]
     def release(self): self.released = True
+
+
+def test_playback_uses_decoded_timestamps_when_average_fps_is_wrong(tmp_path, monkeypatch):
+    image = np.full((64, 96, 3), 120, np.uint8)
+    capture = FakeCapture([image] * 150, fps=22.994379151762903,
+                          times=[frame / 30 for frame in range(150)])
+    monkeypatch.setattr(cv2, 'VideoCapture', lambda _: capture)
+    times = tracking._decode_frame_times(tmp_path / 'source.mov')
+    assert times[79] == pytest.approx(2.6333333333333333)
+    assert times[149] == pytest.approx(4.966666666666667)
+    report = {**fake_report({'start_frame': 0}), 'fps': capture.fps}
+    result = tracking._compact_result('a' * 32,
+                                     {**metadata(), 'fps': capture.fps, 'seed': {'x': .2, 'y': .4}}, report)
+    original = deepcopy(result)
+    fixed = tracking._with_playback_timing(result, times[:3])
+    assert fixed['timing_mode'] == 'presentation_timestamps'
+    assert fixed['points'][2]['time_s'] == pytest.approx(2 / 30)
+    assert fixed['points'][2]['time_s'] < result['points'][2]['time_s']
+    assert fixed['points'][1]['end_time_s'] == fixed['points'][2]['time_s']
+    for before, after in zip(result['points'], fixed['points']):
+        assert {k: v for k, v in after.items() if k not in {'time_s', 'end_time_s'}} == {
+            k: v for k, v in before.items() if k != 'time_s'}
+    assert result == original and capture.released
+
+
+@pytest.mark.parametrize('times', [[0, 0, 0], [0, .1, .05], [0, float('nan'), .1],
+                                  [0, float('inf'), .1], [1, 1.1, 1.2], [0, .1, 31]])
+def test_unsupported_presentation_timestamps_use_explicit_fallback(tmp_path, monkeypatch, times):
+    capture = FakeCapture([np.full((64, 96, 3), 120, np.uint8)] * 3, times=times)
+    monkeypatch.setattr(cv2, 'VideoCapture', lambda _: capture)
+    assert tracking._decode_frame_times(tmp_path / 'source.mov') is None
+    assert capture.released
+
+
+def test_incomplete_timeline_cannot_shift_or_fill_tracking_points():
+    result = tracking._compact_result('a' * 32, {**metadata(), 'seed': {'x': .2, 'y': .4}},
+                                     fake_report({'start_frame': 0}))
+    fixed = tracking._with_playback_timing(result, [0, 1 / 30])
+    assert fixed['timing_mode'] == 'reported_fps_approximate'
+    assert fixed['points'] == result['points']
+
+
+def test_completed_job_retimes_once_without_inference_or_rewriting_original(api, monkeypatch):
+    from experiments.ball_tracking import track_unlabelled_video as runner
+    client, service, _ = api
+    monkeypatch.setattr(service, '_load_model', lambda _: object())
+    monkeypatch.setattr(runner, 'run_video', lambda case, *args, **kwargs: fake_report(case))
+    item = upload(client)
+    identifier = item['tracking_id']
+    service.start(identifier, {'x': .25, 'y': .5})
+    assert await_terminal(service, identifier)['status'] == 'completed'
+    directory = service.jobs / identifier
+    original = (directory / 'result.json').read_bytes()
+    calls = []
+    def decode(source):
+        calls.append(source)
+        return [0, .04, .09]
+    monkeypatch.setattr(tracking, '_decode_frame_times', decode)
+    first = client.get(f'/experimental-tracking/{identifier}/result').json()
+    second = client.get(f'/experimental-tracking/{identifier}/result').json()
+    assert first == second and len(calls) == 1
+    assert first['points'][2]['time_s'] == .09
+    assert first['points'][2]['state'] == 'lost'
+    assert first['points'][2]['center'] is None
+    assert (directory / 'result.json').read_bytes() == original
+    assert (directory / 'result.playback-v1.json').is_file()
 
 
 def test_preview_decodes_sequentially_and_keeps_exact_first_visible_frame(tmp_path, monkeypatch):

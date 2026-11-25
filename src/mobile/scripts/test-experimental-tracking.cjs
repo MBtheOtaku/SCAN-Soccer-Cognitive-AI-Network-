@@ -122,6 +122,31 @@ test('frame lookup does not snap to a later point or carry across a missing fram
   assert.equal(api.pointAtTime([{ ...point(30), time_s: 1.01 }], 1, 30), null);
 });
 
+test('presentation timestamps align a 30fps timeline even when metadata reports 23fps', () => {
+  const timed = { ...result(), fps: 22.994379151762903, timing_mode: 'presentation_timestamps',
+    points: Array.from({ length: 150 }, (_, frame) => ({ ...point(frame), time_s: frame / 30,
+      end_time_s: (frame + 1) / 30 })), start_frame: 0 };
+  const parsed = api.parseTrackingResult(timed, jobId);
+  assert.equal(api.pointAtTime(parsed.points, 2.64, parsed.fps).frame, 79);
+  assert.equal(api.pointAtTime(parsed.points, 4.99, parsed.fps).frame, 149);
+  assert.equal(api.pointAtTime(parsed.points, 5, parsed.fps), null);
+  assert.equal(api.pointAtTime(parsed.points, 1 / 30, parsed.fps).frame, 1);
+  const sparse = parsed.points.filter(p => p.frame !== 80);
+  assert.equal(api.pointAtTime(sparse, 80.5 / 30, parsed.fps), null);
+  const lost = api.parseTrackingResult({ ...timed, points: timed.points.map(p => p.frame === 80
+    ? { ...p, state: 'lost', center: { x: .2, y: .4 } } : p) }, jobId);
+  assert.equal(api.pointAtTime(lost.points, 80.5 / 30, lost.fps).state, 'lost');
+  assert.equal(api.pointAtTime(lost.points, 80.5 / 30, lost.fps).center, null);
+  for (const change of [{ timing_mode: 'guess' },
+    { points: [{ ...timed.points[0], end_time_s: undefined }] },
+    { points: [{ ...timed.points[0], end_time_s: 0 }] },
+    { points: [{ ...timed.points[0], end_time_s: NaN }] },
+    { points: [{ ...timed.points[0], end_time_s: .1 }, timed.points[1]] },
+    { points: [timed.points[0], { ...timed.points[1], time_s: 0 }] }]) {
+    assert.throws(() => api.parseTrackingResult({ ...timed, ...change }, jobId));
+  }
+});
+
 test('preview upload uses SDK58 File multipart only and never calls coaching', async () => {
   const h = harness([preview()]);
   const rep = { name: 'rep-123-test.mov', uri: 'file:///documents/rep-123-test.mov' };
@@ -155,6 +180,37 @@ test('stop waiting aborts polling without sending cancellation or a new upload',
   assert.equal(h.calls.length, 1);
   assert.equal(h.calls[0].url, origin + route);
   await assert.rejects(h.api.startTracking(jobId, { x: 1, y: 0 }, new AbortController().signal), /Tap the ball/);
+});
+
+test('recovery is explicit, progress is separate, and failed recovery retains basic observations', async () => {
+  const h = harness([status('queued')]);
+  await h.api.startTracking(jobId, { x: .5, y: .8 }, new AbortController().signal, true);
+  assert.deepEqual(JSON.parse(h.calls[0].options.body), { seed: { x: .5, y: .8 }, recover_misses: true });
+  const prepared = api.parseTrackingPreview({ ...preview(), recovery_available: true });
+  assert.equal(prepared.recovery_available, true);
+  const progress = api.parseTrackingStatus({ ...status(), phase: 'recovery', recovery_processed_windows: 1, recovery_total_windows: 4 }, jobId);
+  assert.equal(progress.phase, 'recovery');
+  assert.equal(progress.recovery_processed_windows, 1);
+  assert.throws(() => api.parseTrackingStatus({ ...status(), phase: 'recovery', recovery_processed_windows: 5, recovery_total_windows: 4 }, jobId));
+  const data = { ...result(), processing: { model_load_s: 1, baseline_s: 20, recovery_s: 30, total_s: 51 },
+    recovery: { requested: true, status: 'unavailable', added_observations: 0, warning: 'Basic tracking is available.' } };
+  const parsed = api.parseTrackingResult(data, jobId);
+  assert.deepEqual(plain(parsed.points), data.points);
+  assert.equal(parsed.processing.total_s, 51);
+  assert.equal(parsed.recovery.status, 'unavailable');
+  assert.throws(() => api.parseTrackingResult({ ...data, processing: { ...data.processing, total_s: NaN } }, jobId));
+  const lost = { ...point(4, 'lost'), recovered: true };
+  assert.equal(api.parseTrackingResult({ ...result(), points: [lost] }, jobId).points[0].recovered, false);
+});
+
+test('explicit cancellation targets only the existing job and does not upload or analyze', async () => {
+  const h = harness([status('cancelled')]);
+  const cancelled = await h.api.cancelTracking(jobId, new AbortController().signal);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(h.calls[0].url, origin + route + '/cancel');
+  assert.equal(h.calls[0].options.method, 'POST');
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.forms.length, 0);
 });
 
 (async () => {

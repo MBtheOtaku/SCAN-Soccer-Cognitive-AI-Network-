@@ -9,19 +9,27 @@ export type TrackingPreview = {
   tracking_id: string; status: 'ready'; preview_url: string;
   width: number; height: number; preview_width: number; preview_height: number;
   frame_index: number; time_s: number; fps: number; duration_s: number;
+  recovery_available?: boolean;
 };
 export type TrackingStatus = {
   tracking_id: string;
   status: 'ready' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   processed_frames: number; total_frames: number; result_url: string | null; error: string | null;
+  phase?: 'baseline' | 'recovery' | 'completed';
+  recovery_processed_windows?: number; recovery_total_windows?: number;
 };
 export type TrackingPoint = {
   frame: number; time_s: number; state: 'observed_candidate' | 'predicted' | 'lost';
+  end_time_s?: number;
   center: Position | null; prediction: Position | null; identity_verified: false; reason: string;
+  recovered?: boolean;
 };
 export type TrackingResult = {
   tracking_id: string; status: 'completed'; width: number; height: number; fps: number;
   start_frame: number; seed: Position; points: TrackingPoint[];
+  timing_mode?: 'presentation_timestamps' | 'reported_fps_approximate';
+  processing?: { model_load_s: number; baseline_s: number; recovery_s: number; total_s: number };
+  recovery?: { requested: boolean; status: 'not_requested' | 'completed' | 'partial' | 'unavailable'; added_observations: number; warning: string | null };
 };
 
 const ID = /^[a-f0-9]{32}$/;
@@ -80,7 +88,8 @@ export function parseTrackingPreview(value: unknown): TrackingPreview {
   }
   return { tracking_id: jobId, status: 'ready', preview_url: trackingArtifactPath(data.preview_url, jobId, 'preview'),
     width: data.width, height: data.height, preview_width: data.preview_width, preview_height: data.preview_height,
-    frame_index: data.frame_index, time_s: data.time_s, fps: data.fps, duration_s: data.duration_s };
+    frame_index: data.frame_index, time_s: data.time_s, fps: data.fps, duration_s: data.duration_s,
+    ...(typeof data.recovery_available === 'boolean' ? { recovery_available: data.recovery_available } : {}) };
 }
 
 export function parseTrackingStatus(value: unknown, expectedId: string): TrackingStatus {
@@ -92,8 +101,15 @@ export function parseTrackingStatus(value: unknown, expectedId: string): Trackin
   const resultUrl = data.result_url === null || data.result_url === undefined ? null
     : trackingArtifactPath(data.result_url, expectedId, 'result');
   if (data.status === 'completed' && !resultUrl) throw new Error('The completed tracking result is unavailable.');
+  const phase = data.phase;
+  if (phase !== undefined && !['baseline', 'recovery', 'completed'].includes(phase as string)) throw new Error('Invalid tracking stage.');
+  const windows = data.recovery_total_windows, processed = data.recovery_processed_windows;
+  if ((windows !== undefined || processed !== undefined) &&
+      (!integer(windows) || !integer(processed) || processed > windows)) throw new Error('Invalid recovery progress.');
   return { tracking_id: expectedId, status: data.status as TrackingStatus['status'], processed_frames: data.processed_frames,
-    total_frames: data.total_frames, result_url: resultUrl, error: message(data.error) };
+    total_frames: data.total_frames, result_url: resultUrl, error: message(data.error),
+    ...(phase !== undefined ? { phase: phase as TrackingStatus['phase'] } : {}),
+    ...(integer(windows) && integer(processed) ? { recovery_total_windows: windows, recovery_processed_windows: processed } : {}) };
 }
 
 export function parseTrackingResult(value: unknown, expectedId: string): TrackingResult {
@@ -104,25 +120,57 @@ export function parseTrackingResult(value: unknown, expectedId: string): Trackin
     throw new Error('SCAN returned an invalid tracking result.');
   }
   const fps = data.fps;
+  const timingMode = data.timing_mode;
+  if (timingMode !== undefined && !['presentation_timestamps', 'reported_fps_approximate'].includes(timingMode as string)) {
+    throw new Error('Invalid tracking playback timing.');
+  }
+  const presentationTiming = timingMode === 'presentation_timestamps';
   let previous = data.start_frame - 1;
+  let previousTime = -1, previousEnd = -1;
   const points: TrackingPoint[] = data.points.map(raw => {
     const point = object(raw);
     if (!point || !integer(point.frame) || point.frame <= previous || !finite(point.time_s) || point.time_s < 0 ||
-        Math.abs(point.time_s - point.frame / fps) > 1 / fps || point.identity_verified !== false ||
+        (presentationTiming
+          ? point.time_s <= previousTime || !finite(point.end_time_s) || point.end_time_s <= point.time_s ||
+            point.end_time_s > 31 || point.time_s < previousEnd
+          : Math.abs(point.time_s - point.frame / fps) > 1 / fps) || point.identity_verified !== false ||
         typeof point.state !== 'string' || !['observed_candidate', 'predicted', 'lost'].includes(point.state)) {
       throw new Error('The tracking result contains an invalid frame.');
     }
     previous = point.frame;
+    previousTime = point.time_s;
+    if (presentationTiming) previousEnd = point.end_time_s as number;
     const center = position(point.center), prediction = position(point.prediction);
     if (point.state === 'observed_candidate' && !center) throw new Error('A tracking observation has no valid location.');
     // A lost frame never acquires a marker from another frame or its prediction.
     return { frame: point.frame, time_s: point.time_s, state: point.state as TrackingPoint['state'],
       center: point.state === 'observed_candidate' ? center : null,
       prediction: point.state === 'predicted' ? prediction : null,
-      identity_verified: false, reason: message(point.reason) || 'Ball identity remains unverified.' };
+      identity_verified: false, reason: message(point.reason) || 'Ball identity remains unverified.',
+      ...(presentationTiming ? { end_time_s: point.end_time_s as number } : {}),
+      ...(typeof point.recovered === 'boolean' ? { recovered: point.state === 'observed_candidate' && point.recovered } : {}) };
   });
+  let processing: TrackingResult['processing'];
+  if (data.processing != null) {
+    const timing = object(data.processing);
+    if (!timing || ![timing.model_load_s, timing.baseline_s, timing.recovery_s, timing.total_s].every(v => finite(v) && v >= 0)) {
+      throw new Error('Invalid tracking processing times.');
+    }
+    processing = { model_load_s: timing.model_load_s as number, baseline_s: timing.baseline_s as number,
+      recovery_s: timing.recovery_s as number, total_s: timing.total_s as number };
+  }
+  let recovery: TrackingResult['recovery'];
+  if (data.recovery != null) {
+    const detail = object(data.recovery);
+    if (!detail || typeof detail.requested !== 'boolean' || !integer(detail.added_observations) ||
+        !['not_requested', 'completed', 'partial', 'unavailable'].includes(detail.status as string)) throw new Error('Invalid recovery result.');
+    recovery = { requested: detail.requested, status: detail.status as NonNullable<TrackingResult['recovery']>['status'],
+      added_observations: detail.added_observations, warning: message(detail.warning) };
+  }
   return { tracking_id: expectedId, status: 'completed', width: data.width, height: data.height,
-    fps, start_frame: data.start_frame, seed, points };
+    fps, start_frame: data.start_frame, seed, points,
+    ...(timingMode !== undefined ? { timing_mode: timingMode as TrackingResult['timing_mode'] } : {}),
+    ...(processing ? { processing } : {}), ...(recovery ? { recovery } : {}) };
 }
 
 export function containRect(containerWidth: number, containerHeight: number, imageWidth: number, imageHeight: number): ContentRect | null {
@@ -141,6 +189,17 @@ export function tapToSeed(x: number, y: number, rect: ContentRect | null): Posit
 // selection, interpolation or carrying a point across missing observations.
 export function pointAtTime(points: readonly TrackingPoint[], time: number, fps: number): TrackingPoint | null {
   if (!finite(time) || time < 0 || !positive(fps)) return null;
+  if (points[0]?.end_time_s !== undefined) {
+    // Each measured source-frame interval is explicit. Never extrapolate a
+    // position, bridge an omitted frame or move the track forward by a guessed offset.
+    let low = 0, high = points.length - 1, selected: TrackingPoint | null = null;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2), point = points[middle];
+      if (point.time_s <= time) { selected = point; low = middle + 1; }
+      else high = middle - 1;
+    }
+    return selected?.end_time_s !== undefined && time < selected.end_time_s ? selected : null;
+  }
   const frame = Math.floor(time * fps + 1e-7);
   let low = 0, high = points.length - 1;
   while (low <= high) {
@@ -152,7 +211,7 @@ export function pointAtTime(points: readonly TrackingPoint[], time: number, fps:
 }
 
 async function request(path: string, options: RequestInit, signal: AbortSignal, timeoutMs: number): Promise<unknown> {
-  if (!/^\/experimental-tracking\/(?:preview|[a-f0-9]{32}(?:\/(?:start|result))?)$/.test(path)) throw new Error('Invalid tracking request.');
+  if (!/^\/experimental-tracking\/(?:preview|[a-f0-9]{32}(?:\/(?:start|result|cancel))?)$/.test(path)) throw new Error('Invalid tracking request.');
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal.addEventListener('abort', cancel, { once: true });
@@ -186,15 +245,19 @@ export async function prepareTracking(rep: Rep, signal: AbortSignal): Promise<Tr
   return parseTrackingPreview(await request('/experimental-tracking/preview', { method: 'POST', body: form }, signal, 180_000));
 }
 
-export async function startTracking(jobId: string, seed: Position, signal: AbortSignal): Promise<TrackingStatus> {
+export async function startTracking(jobId: string, seed: Position, signal: AbortSignal, recoverMisses = false): Promise<TrackingStatus> {
   if (!position(seed)) throw new Error('Tap the ball inside the preview first.');
   return parseTrackingStatus(await request(`/experimental-tracking/${id(jobId)}/start`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seed }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seed, ...(recoverMisses ? { recover_misses: true } : {}) }),
   }, signal, 20_000), jobId);
 }
 
 export async function trackingStatus(jobId: string, signal: AbortSignal): Promise<TrackingStatus> {
   return parseTrackingStatus(await request(`/experimental-tracking/${id(jobId)}`, {}, signal, 15_000), jobId);
+}
+
+export async function cancelTracking(jobId: string, signal: AbortSignal): Promise<TrackingStatus> {
+  return parseTrackingStatus(await request(`/experimental-tracking/${id(jobId)}/cancel`, { method: 'POST' }, signal, 15_000), jobId);
 }
 
 export async function trackingResult(jobId: string, signal: AbortSignal): Promise<TrackingResult> {

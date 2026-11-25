@@ -1,9 +1,10 @@
-"""Paired development scoring of causal tracker reports against human boxes.
+"""Paired development scoring and miss auditing of frozen tracker reports.
 
 Reference labels are read only after inference. Predictions never count as
 observations. Uncertain/hidden frames are excluded, not treated as negatives.
 """
 import argparse
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -101,17 +102,95 @@ def compare(manifest, labels, baseline, candidate):
                                  if x["correct_observation"] and not y["correct_observation"]]}
 
 
+def audit_misses(manifest, labels, report, *, auxiliary_search=None):
+    """Explain visible misses from recorded checks, never issue model queries.
+
+    An auxiliary search is evaluation evidence only. A matching proposal in
+    that report did not necessarily pass the primary policy's acceptance gates.
+    Missing boxes in a logged crop do not establish universal detector failure.
+    """
+    scored = score_report(manifest,labels,report)
+    sources = [('primary',report)]
+    if auxiliary_search is not None:
+        compare(manifest,labels,report,auxiliary_search)
+        sources.append(('auxiliary',auxiliary_search))
+    reference = {a['frame']:a for a in labels['annotations']}
+    sx = report['frame_transform']['source_width']/report['width']
+    sy = report['frame_transform']['source_height']/report['height']
+    rows = []
+    for score in scored['rows']:
+        if score['reference_state'] != 'visible' or score['correct_observation']:
+            continue
+        frame,box = score['frame'],reference[score['frame']]['box']
+        def hit(point):
+            if (not isinstance(point,(list,tuple)) or len(point) != 2
+                    or any(type(v) not in (int,float) or not math.isfinite(v) for v in point)):
+                raise ValueError('Invalid recorded audit point')
+            return box[0]-3*sx <= point[0] <= box[2]+3*sx and box[1]-3*sy <= point[1] <= box[3]+3*sy
+        checks = []
+        for source_name,source in sources:
+            for index,window in enumerate(source.get('learned_recovery',{}).get('windows',[])):
+                if window.get('status') != 'completed' or frame < window['seed_frame']:
+                    continue
+                for check in window.get('checks',[]):
+                    if check['frame'] != frame:
+                        continue
+                    if type(check['model_visible']) is not bool:
+                        raise ValueError('Invalid recorded model visibility')
+                    matches = [p for p in check['native_proposals'] if hit(p['center_source'])]
+                    crop = window.get('crop_xyxy')
+                    reference_center = [(box[0]+box[2])/2,(box[1]+box[3])/2]
+                    if crop is not None and (len(crop) != 4 or any(type(v) not in (int,float)
+                            or not math.isfinite(v) for v in crop) or crop[0]>=crop[2] or crop[1]>=crop[3]):
+                        raise ValueError('Invalid recorded native crop')
+                    checks.append({'source':source_name,'window_index':index,
+                        'status':check['status'],'model_visible':check['model_visible'],
+                        'learned_point_matches_reference':hit(check['learned_estimate_source']),
+                        'matching_detector_proposals':len(matches),
+                        'detector_search_ran':check.get('native_crop_count',0)>0,
+                        'reference_center_in_supplied_crop':(crop[0]<=reference_center[0]<crop[2]
+                            and crop[1]<=reference_center[1]<crop[3]) if crop is not None else None,
+                        'support_observation_frames':check['support_observation_frames']})
+        if any(c['matching_detector_proposals'] for c in checks):
+            cause = 'matching_detector_box_withheld_by_confirmation'
+        elif any(c['learned_point_matches_reference'] and c['detector_search_ran'] for c in checks):
+            cause = 'no_matching_detector_box_in_logged_search'
+        elif any(c['learned_point_matches_reference'] for c in checks):
+            cause = 'matching_learned_point_withheld_before_search'
+        elif checks and all(c['reference_center_in_supplied_crop'] is False for c in checks):
+            cause = 'reference_outside_supplied_learned_crop'
+        elif checks:
+            cause = 'learned_query_missed_reference'
+        else:
+            cause = 'no_recorded_recovery_window'
+        rows.append({'frame':frame,'category':cause,'checks':checks})
+    return {'status':'evaluation_only_no_inference_queries','padding_working_px':3,
+            'auxiliary_search_used':auxiliary_search is not None,
+            'missed_visible_frames':len(rows),'categories':dict(Counter(r['category'] for r in rows)),
+            'rows':rows}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for arg in ("manifest", "labels", "baseline", "candidate", "output"):
         parser.add_argument("--" + arg, type=Path, required=True)
+    parser.add_argument('--audit-misses',action='store_true',help='Classify visible misses from recorded recovery checks')
+    parser.add_argument('--auxiliary-search-report',type=Path,
+        help='Optional separately frozen search report for evaluation-only miss auditing')
     args = parser.parse_args()
+    if args.auxiliary_search_report and not args.audit_misses:
+        parser.error('--auxiliary-search-report requires --audit-misses')
     if args.output.exists():
         parser.error("Preserve earlier scores; choose a new output path")
     read = lambda p: json.loads(p.read_text(encoding="utf-8-sig"))
     result = compare(*(read(getattr(args, key)) for key in ("manifest", "labels", "baseline", "candidate")))
     result["input_sha256"] = {key: file_sha256(getattr(args, key))
                               for key in ("manifest", "labels", "baseline", "candidate")}
+    if args.audit_misses:
+        result['miss_audit'] = audit_misses(read(args.manifest),read(args.labels),read(args.candidate),
+            auxiliary_search=read(args.auxiliary_search_report) if args.auxiliary_search_report else None)
+        if args.auxiliary_search_report:
+            result['input_sha256']['auxiliary_search_report'] = file_sha256(args.auxiliary_search_report)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     for key in ("baseline", "candidate"):

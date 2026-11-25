@@ -5,7 +5,7 @@ import { useVideoPlayer, VideoView, type VideoPlayer } from 'expo-video';
 import { AppState, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Action, BallProgress } from './controls';
 import {
-  containRect, pointAtTime, prepareTracking, previewImageUrl, startTracking, tapToSeed,
+  cancelTracking, containRect, pointAtTime, prepareTracking, previewImageUrl, startTracking, tapToSeed,
   waitForTracking, type ContentRect, type Position, type TrackingPreview,
   type TrackingResult, type TrackingStatus,
 } from '../lib/experimental-tracking';
@@ -76,7 +76,9 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
   useEventListener(player, 'statusChange', event => {
     setPlaybackStatus(event.status); setPlaybackError(event.error?.message ?? null);
   });
-  useEventListener(player, 'timeUpdate', event => { setTime(event.currentTime); });
+  // Read the current native clock, rather than a timestamp queued before JS
+  // received the event. This reduces event-delivery lag; it is not frame locking.
+  useEventListener(player, 'timeUpdate', () => { setTime(player.currentTime); });
 
   const videoRect = useMemo(() => result
     ? containRect(videoLayout.width, videoLayout.height, result.width, result.height) : null,
@@ -88,7 +90,7 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
   const visibleOverlay = Boolean(result && showOverlay && !fullscreen);
   const marker = point?.state === 'observed_candidate' ? point.center : point?.state === 'predicted' ? point.prediction : null;
   const overlayLabel = !point ? 'No tracking observation for this frame'
-    : point.state === 'observed_candidate' ? 'Observed candidate · Identity unverified'
+    : point.state === 'observed_candidate' ? `${point.recovered ? 'Recovered candidate' : 'Observed candidate'} · Identity unverified`
       : point.state === 'predicted' ? 'Prediction only · Ball not observed' : 'Lost · No ball marker';
 
   async function run(kind: 'upload' | 'tracking', task: (signal: AbortSignal) => Promise<void>) {
@@ -131,12 +133,13 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
         (seed && (Math.abs(completed.seed.x - seed.x) > .00001 || Math.abs(completed.seed.y - seed.y) > .00001))) {
       throw new Error('This tracking result does not match the initial frame and ball mark.');
     }
-    seekPaused(player, completed.start_frame / completed.fps);
-    setTime(completed.start_frame / completed.fps); setResult(completed); setShowOverlay(true);
+    const startTime = completed.points[0]?.time_s ?? completed.start_frame / completed.fps;
+    seekPaused(player, startTime);
+    setTime(startTime); setResult(completed); setShowOverlay(true);
     setNotice('Tracking review ready. Press play above to inspect the original clip with the overlay.');
   }
 
-  function start() {
+  function start(recoverMisses = false) {
     if (!preview || !seed || job?.status !== 'ready') return;
     const prepared = preview, selected = seed;
     player.pause();
@@ -144,7 +147,7 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
       // Keep the known job id even if the start response is interrupted. A
       // status check reconnects without uploading or starting another job.
       setJob(current => current ? { ...current, status: 'queued' } : current);
-      const status = await startTracking(prepared.tracking_id, selected, signal);
+      const status = await startTracking(prepared.tracking_id, selected, signal, recoverMisses);
       if (signal.aborted || !focused.current) return;
       setJob(status);
       await collect(prepared, signal);
@@ -155,6 +158,18 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
     if (!preview) return;
     const prepared = preview;
     void run('tracking', signal => collect(prepared, signal));
+  }
+
+  function cancelJob() {
+    if (!preview) return;
+    const prepared = preview;
+    stopWaiting();
+    void run('tracking', async signal => {
+      const status = await cancelTracking(prepared.tracking_id, signal);
+      if (signal.aborted || !focused.current) return;
+      setJob(status);
+      setNotice('Cancellation requested. The laptop will stop after its current processing step. Check status to confirm.');
+    });
   }
 
   return <>
@@ -169,8 +184,14 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
     {playbackStatus === 'error' && <Text style={ui.error}>{playbackError || 'This clip could not be played.'}</Text>}
     {result && <View style={{ gap: 8 }}>
       <Text style={ui.small}>{showOverlay ? overlayLabel : 'Tracking overlay hidden'}</Text>
-      <Text style={ui.small}>Yellow ring: observed candidate. Purple dashed ring: prediction. No marker during loss. Playback alignment uses reported FPS and is approximate.</Text>
+      <Text style={ui.small}>Yellow ring: observed candidate. Purple dashed ring: prediction. No marker during loss. {result.timing_mode === 'presentation_timestamps'
+        ? 'Replay uses source frame timestamps; small display delays can remain.'
+        : 'Source frame timestamps were unavailable. Replay alignment uses reported FPS and is approximate.'}</Text>
       <Action secondary title={showOverlay ? 'Hide tracking overlay' : 'Show tracking overlay'} onPress={() => setShowOverlay(current => !current)} />
+      {result.processing && <Text style={ui.small}>Laptop processing: {Math.round(result.processing.total_s)} s
+        {result.recovery?.requested ? ` · Recovery: ${Math.round(result.processing.recovery_s)} s` : ''}. Upload time is additional.</Text>}
+      {result.recovery?.requested && <Text style={ui.small}>Recovery added {result.recovery.added_observations} observed candidate frames. Ball identity remains unverified.</Text>}
+      {result.recovery?.warning && <Text style={ui.small}>{result.recovery.warning}</Text>}
     </View>}
     <View style={ui.card}>
       <Text style={ui.badge}>EXPERIMENTAL BALL TRACKING</Text>
@@ -194,16 +215,26 @@ export function ExperimentalReplay({ rep }: { rep: Rep }) {
           {seed && previewRect && <Marker point={seed} rect={previewRect} kind="seed" />}
         </Pressable>
         {!imageLoaded && !error && <Text style={ui.small}>Opening the initial frame…</Text>}
-        <Action title="Run experimental tracking" disabled={!seed || !imageLoaded || Boolean(busy)} onPress={start} />
+        <Action title="Run basic tracking" disabled={!seed || !imageLoaded || Boolean(busy)} onPress={() => start()} />
+        {preview.recovery_available && <>
+          <Text style={ui.small}>Optional recovery searches for missed ball positions. It can add several minutes and remains a visual research feature.</Text>
+          <Action secondary title="Run tracking with recovery" disabled={!seed || !imageLoaded || Boolean(busy)} onPress={() => start(true)} />
+        </>}
       </>}
       {busy === 'tracking' && <BallProgress
-        progress={job?.total_frames ? job.processed_frames / job.total_frames : undefined}
-        label={job?.status === 'queued' ? 'Waiting for the laptop tracker…' : 'Tracking on your laptop…'} />}
+        progress={job?.phase === 'recovery'
+          ? job.recovery_total_windows ? (job.recovery_processed_windows ?? 0) / job.recovery_total_windows : undefined
+          : job?.total_frames ? job.processed_frames / job.total_frames : undefined}
+        label={job?.status === 'queued' ? 'Waiting for the laptop tracker…' : job?.phase === 'recovery'
+          ? `Recovering missed positions… ${job.recovery_processed_windows ?? 0}/${job.recovery_total_windows || '…'} searches`
+          : 'Tracking on your laptop…'} />}
       {job && !busy && job.status !== 'ready' && !result && <>
         <Text style={ui.small}>Tracking job: {job.status}. Checking status reuses this job and does not upload the video again.</Text>
         <Action secondary title="Check status" onPress={reconnect} />
       </>}
       {busy && <Action secondary title="Stop waiting" onPress={stopWaiting} />}
+      {preview && job && ['queued', 'running'].includes(job.status) &&
+        <Action secondary title="Cancel laptop tracking" onPress={cancelJob} />}
       {preview && !busy && <Action secondary title="Load a new initial frame" onPress={upload} />}
       {notice && <Text style={ui.small} accessibilityLiveRegion="polite">{notice}</Text>}
       {error && <Text style={ui.error} accessibilityRole="alert">{error}</Text>}

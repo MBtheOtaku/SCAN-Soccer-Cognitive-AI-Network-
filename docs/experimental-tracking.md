@@ -1,8 +1,8 @@
 # Experimental ball tracking in saved reps
 
 Saved Expo reps now support an optional, manually initialised tracking replay.
-The backend runs the guarded motion-recovery pilot with the existing detector
-weights. The result is a visual experiment, kept separate from ordinary analysis,
+The backend offers basic guarded motion tracking and optional detector-confirmed
+learned recovery with the existing local models. The result is a visual experiment, kept separate from ordinary analysis,
 SituatedState, Jev judgements, coaching and shot outcomes.
 
 ## Using the phone
@@ -15,16 +15,31 @@ Keep the usual Tailscale connection active on the phone and laptop.
    uploads the original clip once and prepares a visible frame near its start.
 3. Tap the centre of the intended ball in the preview. The cyan ring is your
    manual starting position. Adjust it before starting if needed.
-4. Choose **Run experimental tracking**. Progress comes from processed frames.
-   Processing can take several minutes on the laptop.
+4. Choose **Run basic tracking**, or **Run tracking with recovery** when offered.
+   Basic tracking uses frame progress. Recovery has separate search progress;
+   it can add several minutes. Completed results show measured laptop times,
+   excluding upload, and the number of recovered observed candidate frames.
 5. Play the original video above the controls to inspect the overlay. Hide the
    overlay to use ordinary replay, including fullscreen playback.
 
 Yellow rings show selected detector candidates with unverified identity. Purple
 dashed rings show predictions without a selected observation. Lost frames have
 no marker. The app never draws an observed point from a neighbouring frame or
-fills a gap with an observation. Replay alignment uses frame index divided by
-reported FPS and is approximate, particularly for variable-frame-rate media.
+fills a gap with an observation. Replay uses each decoded source frame's
+presentation timestamp when a complete, increasing timeline is available.
+The native video and JavaScript overlay are not frame-locked, so small display
+delays can remain. Unsupported timestamps use an explicitly labelled, approximate
+reported-FPS fallback. The final frame's display duration is estimated.
+
+On 24 November, a phone upload reported about 22.99 average FPS despite its
+150 frames occupying a 30 FPS, five-second presentation timeline. The old overlay
+placed frame 79 at 3.436 seconds instead of 2.633 seconds. The result endpoint now
+decodes timing once and caches `result.playback-v1.json`, preserving `result.json`,
+the original video and every measured position, prediction and lost frame.
+Existing completed laptop jobs can receive this correction without rerunning
+inference. The matching mobile update selects the actual frame interval instead
+of multiplying player time by average FPS. Initial result retrieval includes a
+bounded extra decode, separate from the reported laptop inference times.
 
 The original video is the playback source, so embedded sound is preserved.
 There is no re-encoded tracking video. New recordings support microphone sound;
@@ -34,6 +49,8 @@ cannot recover audio.
 **Stop waiting**, navigation and backgrounding stop phone polling and pause
 replay. A job already running on the laptop continues. **Check status** reconnects
 to the same job while this replay screen remains open, without another upload.
+**Cancel laptop tracking** explicitly requests server cancellation; it takes
+effect after the current processing step and is distinct from stopping polling.
 If the screen is unmounted, reopen the rep and prepare a new job. Only one
 experimental tracking job runs at a time, so wait for an existing job to finish
 before starting another. A failed or interrupted job needs a new upload.
@@ -61,6 +78,31 @@ native-detail supplement. The detector and association settings are unchanged.
 The app path omits saved JPEGs for every frame; it returns normalized positions
 for the original replay instead.
 
+The recovery action is opt-in for each job and requires the pinned local
+CoTracker3 checkpoint, provenance and source under `data/models/research/cotracker3/`,
+plus its existing local runtime under `data/models/research/runtime/`. The native
+source must have a short edge of at least 720 pixels, a longest edge of at most
+3840 pixels, and at most 3840×2160 pixels. Availability in the preview is a file
+and geometry check; inference validates pinned hashes and dependencies. No model
+is downloaded. These are local noncommercial research assets, not a deployment
+dependency or a commercially licensed product integration.
+
+This explicit action uses the reviewed drift-recovery baseline with nested
+native merging and trajectory support, then detector-confirmed recovery with
+measured-history confirmation and motion-guided crops. The initial seed is still
+the single tap on the preview. Learned points only request detector evidence;
+accepted recovery positions are real current detector boxes, never filled gaps.
+The raw baseline and recovery reports are saved separately in the same job.
+The normal action retains the previous motion-recovery configuration.
+
+Optional recovery has a cooperative budget of at most 240 seconds within the
+overall worker budget. Failure or missing research dependencies preserve the
+completed basic track and produce a visible warning. Cancellation discards the
+job result. One run's exact background registrations are reused, and requested
+working frames and native crops are sequentially decoded once within a 384 MiB
+array budget. Larger requests fall back to bounded per-window decoding. Images
+are not upscaled for this reuse and source video bytes are unchanged.
+
 Uploads are limited to 512 MiB, 30 seconds, 1800 frames and supported 4K dimensions.
 The worker enforces decoded-frame/image bounds and a cooperative 20-minute runtime
 limit. Cancellation and timeout checks run between frames and inference calls;
@@ -75,20 +117,21 @@ backend restart. The ordinary `/analyze` endpoint does not wait for this job.
 | --- | --- |
 | `POST /experimental-tracking/preview` | Multipart `video` upload; returns preview metadata and a job ID |
 | `GET /experimental-tracking/{id}/preview` | Initial frame JPEG |
-| `POST /experimental-tracking/{id}/start` | JSON `{"seed":{"x":0.4,"y":0.6}}`, with coordinates in `[0,1)` |
-| `GET /experimental-tracking/{id}` | Status and frame progress |
+| `POST /experimental-tracking/{id}/start` | JSON `{"seed":{"x":0.4,"y":0.6},"recover_misses":true}`; recovery defaults to false |
+| `GET /experimental-tracking/{id}` | Status, frame progress, baseline/recovery phase and recovery search progress |
 | `GET /experimental-tracking/{id}/result` | Completed compact trajectory and provenance |
 | `POST /experimental-tracking/{id}/cancel` | Cooperative server cancellation |
 
 Job IDs and artifact paths are validated. Starting the same job again with the
-same seed is idempotent; changing a started seed requires a new job. The public
+same seed and recovery option is idempotent; changing either requires a new job. The public
 contract has no goal, contact, physical speed, curl or technique assessment.
 Every candidate retains `identity_verified: false`.
 
 ## Offline prediction-drift experiment
 
 `experiments.ball_tracking.track_unlabelled_video` additionally accepts
-`--association drift-recovery`. The phone continues to use `motion-recovery`.
+`--association drift-recovery`. The phone's basic action uses `motion-recovery`;
+the explicit recovery action now uses this reviewed experimental baseline.
 This is an inspected-footage development experiment, not a validated upgrade.
 
 During an aligned, short detection gap, the opt-in native search moves its
@@ -115,7 +158,7 @@ box with nearly the same centre and comparable scale. It does not merge by
 centre distance alone, merge primary/native evidence, relax background checks,
 or verify identity. This addresses duplicate tile proposals resetting temporal
 support. Its flag and per-frame removal counts are recorded in each report.
-The app does not enable it. Development comparisons must report both gained
+The basic app action does not enable it; optional recovery does. Development comparisons must report both gained
 and regressed observations, including changes outside the labelled window.
 
 `--trajectory-native-support` is another explicit offline option requiring
@@ -127,7 +170,8 @@ image. A predicted location supplies a matching prior only: empty frames stay
 empty, detector coordinates are never replaced with a fitted curve, and this
 option does not change association or bypass the background-patch veto. A long
 gap, failed registration or unresolved competing candidates cannot contribute
-fabricated support. The default verifier and phone configuration remain off.
+fabricated support. The default verifier and basic phone action keep this off;
+the explicit recovery action enables it.
 Reports record the flag, trajectory settings, implementation hash, supporting
 frame numbers and whether a detector gap was bridged.
 
@@ -205,7 +249,7 @@ model into coaching, or infer a successful goal from this comparison.
 ### Detector-confirmed learned recovery
 
 `experiments/ball_tracking/detector_confirmed_recovery.py` is a separate offline
-postprocessor. It does not change the phone tracker, analysis defaults, Jev,
+postprocessor, now also used by the explicit phone recovery action. It does not change basic tracking defaults, Jev,
 coaching policy or shot outcomes. Its inputs are an existing frozen baseline
 report, the exact original video and the same one-class detector weights.
 
@@ -233,7 +277,7 @@ four consecutive actual detector observations, in addition to the other
 checks. An invisible estimate alone cannot add a position, and no model
 visibility probability is recalibrated or presented as certainty.
 
-Windows are bounded to 28 frames by default, at most four per clip, with a
+Windows are bounded to 28 frames by default, at most four original views per clip, with a
 12-frame maximum gap from a real observation and a cooperative 240-second
 budget. Torch inference cannot be interrupted halfway through a call, so this
 is not a strict wall-clock timeout. Fixed native crops are at most 768×576;
@@ -297,6 +341,227 @@ automated checks passed, including competing-ball ambiguity, model failure,
 mid-window failure without partial publication, geometry/frame alignment and
 preservation of the existing path. This is a tested offline implementation
 with a modest development gain; continuous recovery is not solved.
+
+#### 24 November: auditing misses before further changes
+
+The committed detector-confirmed version is the frozen comparison baseline
+(commit `7851e8b`). An evaluation-only audit of its 25 remaining visible misses
+found seven frames with a detector proposal inside the fixed reference
+tolerance in at least one logged search, six with a matching learned query but
+no matching detector box, eleven whose reference centre was outside the image
+crop supplied to the learned tracker, and one without a covering recovery
+window. Two of the seven proposal cases were visible only in the separately
+recorded uncertain-search ablation. An available proposal did not necessarily
+pass the primary policy's visibility or sequence checks.
+
+The eleven crop-coverage failures occur in the difficult QGXD6716 recording.
+The fixed crop remained centred around the low, pre-flight seed after the ball
+rose above its upper boundary. Occlusion also occurs in the clip, but these
+failures cannot be attributed solely to occlusion, phone quality or a shortage
+of training examples: the relevant ball pixels were not supplied to that model
+window. Reference coordinates are used only to diagnose this after inference.
+
+The scoring CLI now supports `--audit-misses` and an optional
+`--auxiliary-search-report`. Its `audit_misses` function classifies recorded
+evidence, excludes uncertain/absent references from visible misses, validates
+paired sources and coordinates, and never runs inference or promotes a
+proposal into a scored observation.
+
+Two optional changes address specific causes:
+
+- `--confirm-measured-history` retains earlier measured detector boxes when
+  later observations confirm their same bounded trajectory sequence. Every
+  retained box passed its own visibility, ambiguity, background and time-gap
+  checks. Its position remains the original detector measurement, with
+  `confirmed_at_frame` and supporting frame numbers recorded. Empty, hidden,
+  rejected or ambiguous frames are not filled.
+- `--motion-guided-crop` preserves the original views and adds at most two
+  alternative views, ranked using only the seed and its two preceding real
+  baseline detections. Their image velocity shifts the crop towards the
+  projected middle of the upcoming window, bounded to preserve at least
+  32 source pixels around an unclipped seed. No reference labels, future
+  detections, goal coordinates or physical ballistics choose this crop. The
+  output coordinates still require current detector boxes; the projected
+  crop centre is never a ball measurement. The total cooperative time budget
+  remains unchanged.
+
+A separately tested `--small-crop-fallback` searches one additional real
+256×256 source crop at the same detector input size and confidence threshold
+when the usual 384×384 crop has no nearby box. It never resolves an ambiguous
+existing result by choosing another scale. It added no observations in this
+comparison, so it is not part of the recommended configuration.
+
+Measured-history confirmation alone improved the committed baseline from
+80/105 to 83/105 correct visible-frame observations (strict box hits 79→82),
+without scored regressions or wrong selected positions. It added seven
+observations across the full clips, of which three were in the labelled
+windows. The small-crop ablation produced exactly the same selections.
+Both comparisons replay the same frozen automatic learned estimates and use
+the real detector and original pixels; their timings exclude cached neural
+inference and must not be described as end-to-end speed measurements.
+
+Artifacts and exact implementation snapshots are preserved in ignored
+`data/reference-review/recovery-misses-20261124/`. Pretrained CoTracker3 and
+detector weights remain unchanged. These changes concern image selection and
+evidence confirmation, not new model training, validated ball physics, coaching
+policy or automatic goal outcomes. App analysis defaults are unchanged.
+
+The completed measured-history plus motion-crop comparison increased correct
+observations from 80/105 to 87/105 (strict box hits 79→86), with zero scored
+regressions or wrong selected positions under the fixed scoring rule:
+
+| Recording | Committed recovery | History + motion crops | Visible references |
+| --- | --- | --- | --- |
+| VULK7057 | 21 | 23 | 24 |
+| LPRK9986 | 21 | 24 | 24 |
+| DGQH9591 | 27 | 29 | 31 |
+| QGXD6716 | 11 | 11 | 26 |
+
+The three clearer windows improved from 69/79 to 76/79; the difficult recording
+remains 11/26. Eleven additional observations were selected across the full
+clips, seven within labelled windows and four outside them. Fourteen original
+model windows were replayed and eight alternative crops used fresh learned
+inference. The model supplied improved search evidence on the clearer clips;
+its visibility flag and independent detector checks still withheld positions
+on the difficult clip even where the new crop included the ball.
+
+This establishes a development improvement, not reliable performance for every
+shot. There are only four inspected recordings, two assistant reference windows
+and two user-labelled windows, no absent-target references, and no untouched
+recording session in this comparison. Do not report 87/105 as general tracking
+accuracy or infer a universal false-positive rate. 193 relevant automated
+checks passed. CoTracker's research licence, substantial CPU cost and the
+remaining hard cases continue to limit app promotion.
+
+Recommended optional offline command for the revised configuration:
+
+```powershell
+python -m experiments.ball_tracking.detector_confirmed_recovery `
+  --baseline data/reference-review/predictive-recovery-20261124/trajectory-union/LPRK9986/report.json `
+  --weights data/models/scan-experimental-ball.pt `
+  --cotracker-root data/models/research/cotracker3 `
+  --research-runtime data/models/research/runtime `
+  --confirm-measured-history --motion-guided-crop `
+  --output data/reference-review/recovery-final-LPRK9986/report.json
+```
+
+Keep `--small-crop-fallback` and `--search-uncertain-points` disabled for this
+configuration. They remain explicit research ablations. The command uses the
+prepared initial seed from the baseline report; no frame-by-frame reference
+marks enter tracking inference. It does not enable this tracker in app coaching.
+
+A fresh command-line run reproduced LPRK9986's recovered positions without
+cached model estimates. An initial run retained those positions but reached
+the 240-second research budget during a final overlapping alternative view.
+The planner now skips an alternative whose missing-frame set has already been
+covered by a higher-priority alternative. This compute-budget decision uses
+the frozen baseline's missing-frame mask; crop geometry and ranking still use
+only past measured coordinates. Original views are never pruned by this rule.
+The optimized fresh run and its timings are saved under
+`recovery-misses-20261124/fresh-cli-optimized/LPRK9986/`. The frozen four-clip
+comparison retains all eight tested alternatives for reproducibility; the
+omitted LPRK9986 alternative added no positions in that comparison.
+
+The optimized fresh run completed all four selected windows without errors,
+reproduced the same complete path and 24/24 visible-reference hits, and took
+172.6 seconds for the additional recovery stage. This excludes the original
+baseline tracker, upload, server queue and process startup. It is not a
+real-time or complete phone-to-feedback latency result. The visual review,
+crop-coverage figure, remaining-miss audit, fresh-run comparison and final
+verification record are available from
+`data/reference-review/recovery-misses-20261124/index.html`.
+
+#### Processing follow-up: reuse exact background registration
+
+The user subsequently reported that many recovered positions followed the
+visible ball through the goal area. A targeted processing change reuses SIFT /
+RANSAC background registration when overlapping recovery windows request the
+same frame with exactly the same working-image pixels. The cache belongs to
+one run's verifier, includes frame, shape, dtype and a SHA-256 pixel digest in
+its key, retains at most 384 registrations, and returns copies. It retains no
+video frames. Different images, runs and verifiers cannot share registrations.
+The current detector, candidate-specific background inspection, ambiguity,
+visibility and temporal support checks still run at their original thresholds.
+
+Four real-detector replays with frozen automatic learned estimates reproduced
+the complete 600-frame paths and their observation evidence exactly. The score
+therefore remains 87/105 visible references (86 strict box hits), with no added
+or removed observations. These runs reused 125 of 253 registration requests.
+The paired LPRK9986 replay took 89.5 seconds before the change and 83.0 seconds
+after it, with identical paths. Those replay timings exclude cached learned
+inference and the baseline tracker; one measurement per configuration on this
+CPU cannot establish a general latency reduction. The original sources,
+reports, profiles and implementation snapshots are retained under
+`data/reference-review/recovery-misses-20261124/latency/`.
+
+A subsequent command-line run with fresh CoTracker inference completed all
+four LPRK9986 windows without errors, preserved its entire previous path and
+24/24 visible-reference hits, and took 163.2 seconds for recovery. The earlier
+uncached run took 172.6 seconds. These are individual CPU measurements, and
+neither includes baseline tracking, upload or queue time. The new result still
+does not meet interactive training-session latency. Its report is retained at
+`latency/fresh-cache-LPRK9986/report.json`, with the combined verification at
+`latency/completion.json`.
+
+All 203 relevant automated checks passed, including pixel changes, verifier
+isolation, cache bounds, mutation isolation, registration errors and unchanged
+candidate rejection. Registration reuse is restricted to experimental recovery.
+Model weights, basic app defaults, coaching and outcome decisions are
+unchanged. Full feedback latency remains unresolved.
+
+#### Controlled phone integration and shared decoding
+
+The optional saved-rep action now runs the reviewed recovery through the local
+HTTP job service. Basic tracking and ordinary `/analyze` remain separate. Job
+creation accepts only the initial seed and an optional boolean `recover_misses`;
+reference labels and trajectories remain invalid request inputs. Status exposes
+baseline/recovery phases and search progress. Results expose observed candidates,
+prediction-only frames, losses, recovery warnings and measured processing times.
+An explicit cancel action is separate from stopping phone polling.
+
+Requested working frames and native crops are now decoded once in sequential
+source-frame order. A preflight bounds retained arrays to 384 MiB; requests that
+do not fit retain the previous per-window reader. Shared arrays are read-only,
+and tests compare decoded pixels against the old reader. A recovery view whose
+missing positions have all already been observed is skipped; it cannot replace
+an existing observation. Detector settings and evidence thresholds are unchanged.
+
+Four real-detector replays with frozen automatic learned estimates preserved
+all 600 path rows and their observation evidence exactly: 87/105 visible hits,
+86 strict box hits and no scored regressions. Replay times changed as follows:
+
+| Recording | Registration-cache replay | Shared-decoding replay |
+| --- | --- | --- |
+| LPRK9986 | 83.0 s | 56.1 s |
+| VULK7057 | 68.8 s | 26.5 s |
+| DGQH9591 | 65.8 s | 29.1 s |
+| QGXD6716 | 54.8 s | 16.7 s |
+
+These replays exclude cached learned inference and are not phone latency
+measurements. A real-model local HTTP upload/start/status/result run on the
+original 4K LPRK9986 clip completed with 24/24 visible-reference hits and three
+recovered observations. Every position and observation field matched the prior
+run; only the per-row clip identifier changed to the HTTP job ID. Processing
+took 6.8 seconds to load the detector, 178.5 seconds for initial tracking and
+113.3 seconds for optional recovery: 298.6 seconds total, excluding upload and
+phone polling. Earlier recovery alone took 163.2 seconds. This is a useful
+recovery-stage reduction but does not solve interactive feedback latency; the
+initial detector/tracker remains a substantial bottleneck.
+
+A detector CPU-thread microbenchmark on three fixed frames did not establish
+a large stable benefit from reducing the existing eight threads. No thread
+setting or model was replaced based on that small screen. No additional
+training, new camera footage or label-guided inference was used.
+
+Verification: 250 relevant Python checks passed, along with 12 mobile contract
+checks, the mobile type check and Expo lint. The local HTTP smoke test is not
+physical-phone validation or an untouched-session accuracy test. Artifacts and
+the combined verification are retained under
+`data/reference-review/recovery-misses-20261124/controlled-integration-completion.json`.
+The remaining phone check is to restart the updated backend and Expo preview,
+mark once, select **Run tracking with recovery**, inspect the overlay and timing,
+and verify reconnect/cancellation on the phone. Recovery still does not feed
+Jev, coaching, automatic goal outcomes or calibrated physical measurements.
 
 ### Human reference comparison
 

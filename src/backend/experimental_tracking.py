@@ -78,8 +78,10 @@ def _seed_body(body: bytes) -> dict:
         value = json.loads(body, object_pairs_hook=_unique_json, parse_constant=_reject_nonfinite)
     except (UnicodeError, RecursionError, json.JSONDecodeError) as exc:
         raise ValueError("Send a JSON object containing one normalized seed.") from exc
-    if type(value) is not dict or set(value) != {"seed"}:
-        raise ValueError("Only the seed field is accepted; labels and trajectories cannot be uploaded.")
+    if (type(value) is not dict or 'seed' not in value
+            or set(value)-{'seed','recover_misses'}
+            or type(value.get('recover_misses',False)) is not bool):
+        raise ValueError("Send one seed and an optional boolean recover_misses; labels and trajectories cannot be uploaded.")
     seed = value["seed"]
     if type(seed) is not dict or set(seed) != {"x", "y"}:
         raise ValueError("The seed must contain x and y only.")
@@ -178,6 +180,67 @@ def _normalized_point(value, width, height):
     return {"x": x, "y": y}
 
 
+def _decode_frame_times(source: Path) -> list[float] | None:
+    """Read the source timeline, without running or changing ball inference.
+
+    Phone MOV average-rate metadata can disagree with its presentation times.
+    Only accept a complete, zero-based, strictly increasing decoded timeline.
+    Unsupported timestamps retain the explicitly approximate FPS fallback.
+    """
+    import cv2
+
+    capture = cv2.VideoCapture(str(source))
+    started = time.monotonic()
+    times = []
+    try:
+        if not capture.isOpened():
+            return None
+        while True:
+            if time.monotonic() - started > 20:
+                return None
+            # The completed tracker already checked every decoded image. grab
+            # advances its presentation timestamp without allocating/converting
+            # another full 4K BGR image merely to read the clock.
+            if not capture.grab():
+                break
+            timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+            if (len(times) >= MAX_FRAMES or not _finite(timestamp)
+                    or not 0 <= timestamp <= MAX_DURATION_S
+                    or (not times and abs(timestamp) > 1e-6)
+                    or (times and timestamp <= times[-1])):
+                return None
+            times.append(float(timestamp))
+        return times or None
+    finally:
+        capture.release()
+
+
+def _with_playback_timing(result: dict, times: list[float] | None) -> dict:
+    """Change display times only; preserve every candidate, prediction and loss."""
+    value = dict(result)
+    points = result.get('points', [])
+    valid = (type(times) is list and bool(times) and bool(points)
+             and len(times) == points[-1]['frame'] + 1
+             and len(times) <= MAX_FRAMES
+             and all(_finite(t) and 0 <= t <= MAX_DURATION_S for t in times)
+             and abs(times[0]) <= 1e-6
+             and all(a < b for a, b in zip(times, times[1:])))
+    value['playback_timing_version'] = 1
+    value['timing_mode'] = 'presentation_timestamps' if valid else 'reported_fps_approximate'
+    if valid:
+        # The next decoded timestamp closes each frame's display interval.
+        # The final interval uses a conservative, bounded duration estimate;
+        # it is a display bound, not a motion estimate.
+        last_duration = min(times[-1] - times[-2], 1 / result['fps'], 1.0) if len(times) > 1 else min(1 / result['fps'], 1.0)
+        ends = times[1:] + [times[-1] + last_duration]
+        value['points'] = [{**point, 'time_s': times[point['frame']],
+                            'end_time_s': ends[point['frame']]} for point in points]
+        value['limitations'] = [item for item in result.get('limitations', [])
+                                if not item.startswith('Frame times use frame index')]
+        value['limitations'].append('Replay uses decoded presentation timestamps; native video and JavaScript overlay rendering are not frame-locked. The final frame duration is estimated.')
+    return value
+
+
 def _compact_result(tracking_id: str, state: dict, report: dict) -> dict:
     width, height, fps = report.get("width"), report.get("height"), report.get("fps")
     if (not all(_finite(value) and value > 0 for value in (width, height, fps))
@@ -211,8 +274,11 @@ def _compact_result(tracking_id: str, state: dict, report: dict) -> dict:
             reason = "selected_candidate_outside_image_or_nonfinite"
         points.append({"frame": frame, "time_s": frame / fps, "state": point_state,
                        "center": center, "prediction": prediction,
-                       "identity_verified": False, "reason": reason})
+                       "identity_verified": False, "reason": reason,
+                       "recovered": center is not None and reason == 'detector_confirmed_learned_recovery_provisional'})
     limitations = list(_LIMITATIONS)
+    if state.get('recover_misses'):
+        limitations.append('Optional recovery uses later frames from the saved clip to confirm measured candidates; it is not a live causal tracker.')
     if min(state["width"], state["height"]) < 720:
         limitations.append("Source short edge is below 720 pixels; native-detail fallback is disabled and no upscaling is used.")
     return {
@@ -223,9 +289,11 @@ def _compact_result(tracking_id: str, state: dict, report: dict) -> dict:
         "start_frame": state["frame_index"], "seed": state["seed"],
         "points": points, "processed_frames": len(points),
         "observed_candidate_frames": sum(point["state"] == "observed_candidate" for point in points),
-        "identity_verified": False, "association": "motion-recovery",
+        "identity_verified": False, "association": report.get('association_method','motion-recovery'),
         "native_detail_fallback": report.get("native_detail_fallback") is True,
         "limitations": limitations,
+        "processing": state.get('processing'),
+        "recovery": state.get('recovery'),
         "provenance": {key: report.get(key) for key in (
             "source_sha256", "weights_sha256", "implementation_sha256",
             "native_detail_implementation_sha256", "settings", "association_settings",
@@ -244,6 +312,27 @@ class ExperimentalTrackingService:
         self.closed = False
         self.model = None
         self.model_signature = None
+        self.recovery_provider = None
+
+    def _recovery_available(self, state):
+        root = self.project_root/'data/models/research/cotracker3'
+        return (min(state['width'],state['height']) >= 720
+            and max(state['width'],state['height']) <= 3840
+            and state['width']*state['height'] <= 3840*2160
+            and (root/'scaled_offline.pth').is_file()
+            and (root/'provenance.json').is_file()
+            and (root/'source/cotracker/predictor.py').is_file())
+
+    def _load_recovery(self):
+        # Provenance and every pinned source hash are checked on each job, even
+        # when a validated model can be retained between research requests.
+        from experiments.ball_tracking.cotracker_recovery import CoTrackerRecovery
+        provider = CoTrackerRecovery(self.project_root/'data/models/research/cotracker3',
+            runtime_directory=self.project_root/'data/models/research/runtime',threads=CPU_THREADS)
+        if self.recovery_provider is not None and provider.configuration()==self.recovery_provider.configuration():
+            provider.model = self.recovery_provider.model
+        self.recovery_provider = provider
+        return provider
 
     def _directory(self, tracking_id: str) -> Path:
         if type(tracking_id) is not str or _ID.fullmatch(tracking_id) is None:
@@ -293,6 +382,10 @@ class ExperimentalTrackingService:
         value.update(preview_url=f"{PREFIX}/{state['tracking_id']}/preview",
                      result_url=f"{PREFIX}/{state['tracking_id']}/result" if state["status"] == "completed" else None,
                      model_available=self._model_available(), experimental=True)
+        value.update(recovery_available=self._recovery_available(state),
+            recovery_requested=state.get('recover_misses',False),phase=state.get('phase','baseline'),
+            recovery_processed_windows=state.get('recovery_processed_windows',0),
+            recovery_total_windows=state.get('recovery_total_windows',0))
         if state.get("seed") is not None:
             value["seed"] = state["seed"]
         if not value["model_available"] and value["error"] is None:
@@ -353,28 +446,52 @@ class ExperimentalTrackingService:
             if state["status"] != "completed":
                 raise HTTPException(409, f"Tracking is {state['status']}; no completed result is available.")
             try:
-                return json.loads((directory / "result.json").read_text(encoding="utf-8"))
+                result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(500, "The completed tracking result is unavailable.") from exc
+            cache = directory / 'result.playback-v1.json'
+            try:
+                saved = json.loads(cache.read_text(encoding='utf-8'))
+                if (saved.get('tracking_id') == tracking_id
+                        and saved.get('playback_timing_version') == 1):
+                    return saved
+            except (OSError, ValueError, AttributeError):
+                pass
+        # Decode outside the service lock. This also upgrades already completed
+        # phone jobs without another upload or several minutes of inference.
+        # Preserve the original result and all raw tracking/recovery reports.
+        try:
+            times = _decode_frame_times(directory / f"source{state['source_suffix']}")
+        except Exception:
+            times = None
+        value = _with_playback_timing(result, times)
+        with self.lock:
+            _atomic_json(cache, value)
+        return value
 
-    def start(self, tracking_id: str, seed: dict) -> dict:
+    def start(self, tracking_id: str, seed: dict, *, recover_misses=False) -> dict:
         with self.lock:
             directory, state = self._read(tracking_id)
+            if type(recover_misses) is not bool:
+                raise HTTPException(400,"recover_misses must be boolean.")
             if state.get("seed") is not None:
-                if state["seed"] == seed:
+                if state["seed"] == seed and state.get('recover_misses',False)==recover_misses:
                     return self._public(state)
-                raise HTTPException(409, "This job already has a different seed. Upload the clip again to select another ball.")
+                raise HTTPException(409, "This job already has a different seed or recovery option. Upload the clip again to change them.")
             if self.closed:
                 raise HTTPException(503, "The tracking service is shutting down.")
             if state["status"] != "ready":
                 raise HTTPException(409, "This job is not ready to start. Upload the clip again.")
             if not self._model_available():
                 raise HTTPException(503, self._public(state)["error"])
+            if recover_misses and not self._recovery_available(state):
+                raise HTTPException(503,"Research recovery needs the local pinned model and a supported original clip of at least 720p. Basic tracking is still available.")
             try:
                 lease = _Lease(self.jobs / ".active.lock")
             except OSError as exc:
                 raise HTTPException(429, "Another experimental tracking job is running. Wait for it to finish, then start this clip.") from exc
-            state.update(seed=dict(seed), status="queued", owner=self.owner, error=None)
+            state.update(seed=dict(seed), status="queued", owner=self.owner, error=None,
+                         recover_misses=recover_misses,phase='baseline')
             job_lease = None
             try:
                 job_lease = _Lease(directory / ".worker.lock")
@@ -444,6 +561,7 @@ class ExperimentalTrackingService:
             if not weights.is_file() or weights.suffix.lower() != ".pt":
                 raise ValueError("The local experimental ball model is unavailable; no model will be downloaded.")
             model = self._load_model(weights)
+            model_loaded = time.monotonic()
             remaining = MAX_RUNTIME_S - (time.monotonic() - started)
             if remaining <= 0:
                 raise TimeoutError("Model loading exceeded the tracking runtime limit.")
@@ -453,8 +571,11 @@ class ExperimentalTrackingService:
                  "clip": state["tracking_id"], "start_frame": state["frame_index"],
                  "seed": [state["seed"]["x"] * state["width"], state["seed"]["y"] * state["height"]]},
                 model, weights, directory / "tracking", CPU_THREADS,
-                association="motion-recovery", processing_short_edge=720 if native else None,
+                association="drift-recovery" if state.get('recover_misses') else "motion-recovery",
+                processing_short_edge=720 if native else None,
                 native_detail_fallback=native, save_frames=False,
+                merge_nested_native=bool(state.get('recover_misses')),
+                trajectory_native_support=bool(state.get('recover_misses')),
                 progress_callback=progress, cancel_check=cancelled,
                 maximum_frames=min(MAX_FRAMES, int(MAX_DURATION_S * state["fps"])), maximum_runtime_s=remaining,
                 maximum_source_pixels=MAX_PIXELS, maximum_source_dimension=MAX_DIMENSION,
@@ -463,6 +584,49 @@ class ExperimentalTrackingService:
                 raise TrackingCancelledError("Tracking was cancelled.")
             if report.get("reached_reported_end") is not True:
                 raise ValueError("Video decoding ended before the reported end; this partial run is not a completed result.")
+            baseline_finished = time.monotonic()
+            state['recovery'] = {'requested':False,'status':'not_requested','added_observations':0}
+            if state.get('recover_misses'):
+                state.update(phase='recovery',recovery_processed_windows=0,recovery_total_windows=0)
+                with self.lock:
+                    _atomic_json(directory/'state.json',state)
+                def recovery_progress(value):
+                    state.update(recovery_processed_windows=value['processed_windows'],
+                                 recovery_total_windows=value['total_windows'])
+                    with self.lock:
+                        _atomic_json(directory/'state.json',state)
+                try:
+                    from experiments.ball_tracking.detector_confirmed_recovery import run_recovery, LearnedRecoverySettings
+                    provider = self._load_recovery()
+                    remaining = MAX_RUNTIME_S-(time.monotonic()-started)
+                    if remaining <= 0:
+                        raise TimeoutError('No recovery time remains')
+                    recovered = run_recovery(report,directory/f"source{state['source_suffix']}",
+                        model,weights,provider,directory/'recovery/report.json',
+                        baseline_path=directory/'tracking/report.json',
+                        settings=LearnedRecoverySettings(confirm_measured_history=True,motion_guided_crop=True,
+                            maximum_runtime_s=min(240.0,remaining)),
+                        cancel_check=cancelled,progress_callback=recovery_progress)
+                    info = recovered['learned_recovery']
+                    state['recovery'] = {'requested':True,
+                        'status':'partial' if info['errors'] else 'completed',
+                        'added_observations':len(info['new_observation_frames']),
+                        'warning':'Some recovery searches could not finish; existing observations were preserved.' if info['errors'] else None}
+                    report = recovered
+                except Exception:
+                    if cancelled():
+                        raise TrackingCancelledError('Recovery was cancelled')
+                    import logging
+                    logging.getLogger(__name__).exception('Optional recovery unavailable for job %s',state['tracking_id'])
+                    state['recovery'] = {'requested':True,'status':'unavailable','added_observations':0,
+                        'warning':'Recovery could not finish. The completed basic tracking result is available.'}
+            if cancelled():
+                raise TrackingCancelledError('Tracking was cancelled')
+            finished = time.monotonic()
+            state['processing'] = {'model_load_s':model_loaded-started,
+                'baseline_s':baseline_finished-model_loaded,'recovery_s':finished-baseline_finished,
+                'total_s':finished-started,'excludes_upload':True}
+            state['phase'] = 'completed'
             result = _compact_result(state["tracking_id"], state, report)
             _atomic_json(directory / "result.json", result)
             state.update(status="completed", processed_frames=result["processed_frames"],
@@ -528,7 +692,8 @@ def create_tracking_router(project_root: Path) -> APIRouter:
             seed = _seed_body(bytes(body))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return await run_in_threadpool(service.start, tracking_id, seed)
+        recover_misses = json.loads(body).get('recover_misses',False)
+        return await run_in_threadpool(service.start, tracking_id, seed, recover_misses=recover_misses)
 
     @router.get("/{tracking_id}")
     def status(tracking_id: str):
